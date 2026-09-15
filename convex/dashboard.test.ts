@@ -744,7 +744,7 @@ describe("dashboard.getOverview — low stock", () => {
   });
 });
 
-describe("dashboard.getOverview — fresh signup", () => {
+describe("dashboard.getOverview — no shop row yet", () => {
   test("returns null when no shop row exists yet", async () => {
     const t = convexTest(schema, modules);
     await t.run(async (ctx) => {

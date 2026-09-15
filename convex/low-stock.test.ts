@@ -23,7 +23,7 @@ vi.mock("./auth", () => ({
 
 const modules = import.meta.glob("./**/*.ts");
 
-/** Seed ONLY a staff row — no shop row — to reproduce a fresh sign-up that
+/** Seed ONLY a staff row — no shop row — to reproduce a new user that
  * lands on /dashboard before the owner has finished Settings. */
 async function seedStaffOnly(t: ReturnType<typeof convexTest>) {
   await t.run(async (ctx) => {
@@ -37,7 +37,7 @@ async function seedStaffOnly(t: ReturnType<typeof convexTest>) {
   });
 }
 
-describe("lowStock — fresh sign-up (no shop row yet)", () => {
+describe("lowStock — no shop row yet", () => {
   test("lowStockCount returns 0 instead of throwing NO_SHOP", async () => {
     const t = convexTest(schema, modules);
     await seedStaffOnly(t);

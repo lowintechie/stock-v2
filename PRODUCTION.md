@@ -107,7 +107,6 @@ APP_PORT = 7000
 - [ ] Domain/IP configured
 - [ ] SSL certificate (if using HTTPS)
 - [ ] First deployment successful
-- [ ] Test user registration
 - [ ] Test login
 - [ ] Test basic functionality
 
