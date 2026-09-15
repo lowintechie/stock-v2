@@ -269,20 +269,18 @@ export const getOverview = query({
       }
     }
 
-    // Still owed: the same bounded scan as sales.listUnpaid (no index can
-    // express "remaining > 0") — recent orders per owing status, paid
-    // computed per order, remaining summed in memory.
-    const SCAN = 250;
+    // Still owed: scan all orders per owing status, paid computed per
+    // order, remaining summed in memory. Uses by_status_createdAt index
+    // so only non-draft/non-cancelled orders are scanned.
     const batches = await Promise.all(
       OWED_STATUSES.map((status) =>
         ctx.db
           .query("sales")
           .withIndex("by_status_createdAt", (q) => q.eq("status", status))
-          .order("desc")
-          .take(SCAN)
+          .collect()
       )
     );
-    const merged = batches.flat().sort((a, b) => b.createdAt - a.createdAt);
+    const merged = batches.flat();
     let salesDue = 0;
     for (const sale of merged) {
       const [total, paid] = await Promise.all([

@@ -127,7 +127,7 @@ POS for an online clothing shop (DolyOutfits), but designed **generic**: any sho
 
 ## Task roadmap
 
-> Checked tasks are implemented (routes + Convex functions + components in place). T27 is the only remaining item.
+> Checked tasks are implemented (routes + Convex functions + components in place). All tasks complete.
 
 **Phase 1 — Foundation & catalog**
 - [x] T1 `shop` settings table + UI (name, **logo upload**, address, currency, **exchange rate**, timezone, delivery module toggle, **printer settings**); `users` with role
@@ -166,7 +166,7 @@ POS for an online clothing shop (DolyOutfits), but designed **generic**: any sho
 - [x] T24 CSV export (reports, stock) + one-click full JSON backup of all tables (business data safety)
 - [x] T25 Receipt/invoice re-print from order detail; print formats: **80×80mm thermal receipt** (checkout — first print ships with T10) + **80×80 package label** (customer name, phone, address, order code — for packages handed to delivery companies) + A5 delivery invoice. **Printing stack**: ESC/POS bytes via `esc-pos-encoder`; USB printers via WebUSB (`navigator.usb`, no driver install); USB / network / **wireless printers** via QZ Tray (desktop bridge) or direct network IP; **auto-print** after checkout with no browser print dialog; printer choice + connection settings saved per shop (in `shop` settings) with a test-print button; per-printer assignment (thermal 80mm vs A4/A5)
 - [x] T26 Roles/permissions (owner vs staff)
-- [ ] T27 Customer credit ledger (debt per customer)
+- [x] T27 Customer credit ledger (debt per customer)
 
 ## Extra feature ideas (adopt when needed)
 

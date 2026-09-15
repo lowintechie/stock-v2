@@ -568,12 +568,30 @@ export const getCustomerDebtReport = query({
     const shop = await getShop(ctx);
     const asOfDay = dayString(Date.now(), shop.timezone);
     const asOfOrdinal = calendarDayOrdinal(asOfDay);
-    const sales = await ctx.db.query("sales").withIndex("by_createdAt").collect();
+    // Use the by_status_createdAt index to scan only owing statuses —
+    // skips draft and cancelled orders at the index level instead of
+    // loading every sale ever made and filtering in memory.
+    const OWING_STATUSES = [
+      "confirmed",
+      "pending",
+      "packed",
+      "delivering",
+      "delivered",
+      "partially_delivered",
+      "cancelled",
+    ] as const;
+    const batches = await Promise.all(
+      OWING_STATUSES.map((status) =>
+        ctx.db
+          .query("sales")
+          .withIndex("by_status_createdAt", (q) => q.eq("status", status))
+          .collect()
+      )
+    );
+    const sales = batches.flat();
     const owingOrders = (
       await Promise.all(
-        sales
-          .filter((sale) => sale.status !== "draft")
-          .map(async (sale) => {
+        sales.map(async (sale) => {
             const [total, paid] = await Promise.all([
               computeTotal(ctx, sale),
               computePaid(ctx, sale._id),

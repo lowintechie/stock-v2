@@ -24,6 +24,8 @@ const TABLES = [
   "productVariants",
   "suppliers",
   "deliveryCompanies",
+  "sets",
+  "setItems",
   "purchases",
   "purchaseItems",
   "stockLedger",
