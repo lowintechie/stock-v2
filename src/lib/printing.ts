@@ -53,6 +53,7 @@ export interface PrintSale {
   customerAddress?: string;
   channelName: string;
   companyName?: string;
+  note?: string;
   subtotal: number;
   discount: number;
   deliveryFee: number;
@@ -77,8 +78,8 @@ export interface PrintSale {
 const WIDTH = 48;
 
 /** Item-table columns: name left, qty, line subtotal flush right. */
-const QTY_W = 5;
-const SUBTOTAL_W = 14;
+const QTY_W = 4;
+const SUBTOTAL_W = 12;
 /** Right side of an item row: qty column + gap + subtotal column. */
 const RIGHT_W = QTY_W + 1 + SUBTOTAL_W;
 /** Name column — derived, so a row can NEVER exceed the paper width. */
@@ -195,7 +196,7 @@ function variantLabel(size: string, color?: string): string {
 
 /** Phones are stored with their digits exactly as entered (leading trunk
  * zero kept), so paper shows them verbatim — no zero is added or removed. */
-function phoneDisplay(phone: string): string {
+export function phoneDisplay(phone: string): string {
   return phone.trim();
 }
 
@@ -299,8 +300,8 @@ const RASTER_FONT =
 /** Output line height in dots — MUST be a multiple of 8 (raster mode packs
  * pixels 8-per-byte per row). 24 = exactly one font-A line, same as English. */
 const RASTER_LINE_H = 24;
-/** Supersampling factor — draw at 2x, downsample for crisp 1-bit dots. */
-const RASTER_SCALE = 2;
+/** Supersampling factor — draw at 3x, downsample for crisp 1-bit dots. */
+const RASTER_SCALE = 3;
 
 /** True when the text has characters the printer's cp437 font cannot draw. */
 function needsRaster(text: string): boolean {
@@ -439,6 +440,7 @@ export function buildReceiptBytes(doc: PrintSale): Uint8Array {
   if (doc.customerAddress) labeledRow(enc, E.sales.location, doc.customerAddress, true);
   if (doc.companyName) labeledRow(enc, E.sales.delivery, doc.companyName, true);
   labeledRow(enc, E.sales.channel, doc.channelName);
+  if (doc.note) labeledRow(enc, E.common.note, doc.note);
   row(enc, SEPARATOR);
   row(enc, itemHeader(E.sales.item, E.sales.qty, E.sales.total));
   row(enc, SEPARATOR);

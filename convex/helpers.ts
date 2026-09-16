@@ -10,6 +10,17 @@ import { authComponent } from "./auth";
 // Input guards (addresses the "unchecked v.number()" class of bugs)
 // ---------------------------------------------------------------------------
 
+/** Normalize a name for search indexing: lowercase, hyphens → spaces,
+ * collapse whitespace. "ahsey-kmav" and "ahsey kmav" both become
+ * "ahsey kmav" so the prefix index matches either form. */
+export function normalizeName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/-/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** Money must be a finite integer number of cents within a sane range. */
 export function assertCents(value: number, label = "amount"): number {
   if (!Number.isFinite(value) || !Number.isInteger(value)) {

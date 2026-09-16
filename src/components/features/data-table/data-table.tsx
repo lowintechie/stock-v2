@@ -11,6 +11,7 @@ import {
 import {
   columnOrderingFeature,
   columnVisibilityFeature,
+  rowSelectionFeature,
   rowSortingFeature,
   tableFeatures,
   useTable,
@@ -20,6 +21,7 @@ import {
   type ColumnVisibilityState,
   type OnChangeFn,
   type RowData,
+  type RowSelectionState,
   type SortingState,
   type Updater,
 } from "@tanstack/react-table";
@@ -46,6 +48,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Table,
   TableBody,
@@ -75,6 +78,7 @@ const dataTableFeatures = tableFeatures({
   rowSortingFeature,
   columnOrderingFeature,
   columnVisibilityFeature,
+  rowSelectionFeature,
   // Type-only slot: every ColumnDef built through DataTableColumn<T> gets
   // meta?: DataTableColumnMeta.
   columnMeta: {} as DataTableColumnMeta,
@@ -116,6 +120,9 @@ export type DataTableProps<TData extends RowData> = {
   pageSize?: number;
   onPageSizeChange?: (size: number) => void;
   onPageChange?: (direction: "prev" | "next") => void;
+  // Row selection (opt-in). When enabled, a checkbox column is prepended.
+  rowSelection?: RowSelectionState;
+  onRowSelectionChange?: (updater: Updater<RowSelectionState>) => void;
 };
 
 function defaultGetRowId<TData extends RowData>(row: TData, index: number) {
@@ -164,6 +171,8 @@ export function DataTable<TData extends RowData>({
   pageSize = 20,
   onPageSizeChange,
   onPageChange,
+  rowSelection,
+  onRowSelectionChange,
 }: DataTableProps<TData>) {
   // UI preferences persist in the browser (column order & visibility).
   const [persistedOrder, setPersistedOrder] = usePersistentState<ColumnOrderState>(
@@ -174,6 +183,34 @@ export function DataTable<TData extends RowData>({
     `dt:${persistKey}:visibility`,
     {},
   );
+
+  // Prepend a checkbox column when row selection is controlled.
+  const enableSelection = rowSelection !== undefined;
+  const effectiveColumns = useMemo(() => {
+    if (!enableSelection) return columns;
+    const selectColumn: DataTableColumn<TData> = {
+      id: "__select",
+      enableSorting: false,
+      enableHiding: false,
+      meta: { headerClassName: "w-10", cellClassName: "w-10" },
+      header: ({ table }) => (
+        <Checkbox
+          checked={table.getIsAllPageRowsSelected()}
+          onCheckedChange={(v) => table.toggleAllPageRowsSelected(!!v)}
+          aria-label="Select all"
+        />
+      ),
+      cell: ({ row }) => (
+        <Checkbox
+          checked={row.getIsSelected()}
+          onCheckedChange={(v) => row.toggleSelected(!!v)}
+          aria-label="Select row"
+          onClick={(e) => e.stopPropagation()}
+        />
+      ),
+    };
+    return [selectColumn, ...columns];
+  }, [enableSelection, columns]);
   // Visibility may be controlled by the page (e.g. a Columns menu in the
   // page header) — the internal per-table store is the uncontrolled path.
   const isVisibilityControlled =
@@ -198,8 +235,8 @@ export function DataTable<TData extends RowData>({
   // Effective column order = persisted order, pruned to existing columns,
   // with any new columns appended in definition order.
   const defaultOrder = useMemo(
-    () => columns.map(columnIdOf).filter(Boolean),
-    [columns],
+    () => effectiveColumns.map(columnIdOf).filter(Boolean),
+    [effectiveColumns],
   );
   const effectiveOrder = useMemo(() => {
     const merged = persistedOrder.filter((id) => defaultOrder.includes(id));
@@ -216,17 +253,19 @@ export function DataTable<TData extends RowData>({
   const table = useTable({
     features: dataTableFeatures,
     data,
-    columns,
+    columns: effectiveColumns,
     getRowId: getRowId ?? defaultGetRowId,
     manualSorting: true,
     state: {
       ...(isSortingControlled ? { sorting: sortingState } : {}),
       columnOrder: effectiveOrder,
       columnVisibility: visibilityState,
+      ...(enableSelection ? { rowSelection } : {}),
     },
     onSortingChange: handleSortingChange,
     onColumnOrderChange: setPersistedOrder,
     onColumnVisibilityChange: handleVisibilityChange,
+    ...(enableSelection ? { onRowSelectionChange } : {}),
   });
 
   // Header drag-and-drop for column reordering (desktop only — the table is

@@ -1550,6 +1550,58 @@ export const setStatus = mutation({
   },
 });
 
+// Batch status update: move multiple orders to the same target status in one
+// transaction. Only simple forward transitions (confirmed → packed → delivering
+// → delivered) are supported — cancellation requires per-order resolutions and
+// stays a single-sale action. Orders that can't make the transition are skipped.
+export const batchSetStatus = mutation({
+  args: {
+    saleIds: v.array(v.id("sales")),
+    status: saleStatus,
+    note: v.optional(v.string()),
+  },
+  returns: v.object({ updated: v.number(), skipped: v.number() }),
+  handler: async (ctx, args) => {
+    const { staff } = await requireUser(ctx);
+    if (args.saleIds.length === 0 || args.saleIds.length > 100) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Select between 1 and 100 orders.",
+      });
+    }
+    if (args.status === "cancelled") {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Cancel orders one at a time — each needs its own review.",
+      });
+    }
+    const seen = new Set<string>();
+    let updated = 0;
+    let skipped = 0;
+    let now = Date.now();
+
+    for (const saleId of args.saleIds) {
+      if (seen.has(saleId)) continue;
+      seen.add(saleId);
+      const sale = await ctx.db.get(saleId);
+      if (!sale) continue;
+      const allowed = ALLOWED_TRANSITIONS[sale.status] ?? [];
+      if (!allowed.includes(args.status)) {
+        skipped++;
+        continue;
+      }
+      await transitionSaleStatus(ctx, sale, staff, args.status, {
+        deliveryFee: sale.deliveryFee,
+        note: args.note,
+      }, now);
+      now += 1; // unique ts per event
+      updated++;
+    }
+
+    return { updated, skipped };
+  },
+});
+
 /** One order-level field that changed, resolved before the patch so the
  * audit event can show the true before → after. */
 type OrderFieldChange = { field: string; label: string; from: string; to: string };

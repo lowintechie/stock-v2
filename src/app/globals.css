@@ -200,8 +200,13 @@
   }
   body.printing-receipt-80 #invoice-print-root .invoice-print-area {
     page: receipt-80;
-    /* Fits inside 80mm − @page 3mm×2 − root padding 3mm×2 ≈ 68mm. */
     width: 100%;
     font-size: 11px;
+    line-height: 1.35;
+    gap: 2px;
+  }
+  body.printing-receipt-80 #invoice-print-root .print-compact-table {
+    font-size: 9px;
+    line-height: 1.2;
   }
 }

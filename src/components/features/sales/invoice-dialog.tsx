@@ -27,6 +27,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  phoneDisplay,
   printLabelDoc,
   printReceiptDoc,
   toastPrintError,
@@ -230,24 +231,23 @@ export function InvoiceDialog({
   );
 }
 
-/** The receipt body — shared by the on-screen preview and the print portal. */
+/** The receipt body — shared by the on-screen preview and the print portal.
+ *  The 80mm CSS sets font-size: 11px as the base. Only the items table uses
+ *  a smaller print size — the info section stays at the base for readability. */
 function InvoiceBody({ ctx }: { ctx: InvoiceContext }) {
   const { detail, shopName, shopAddress, shopPhone, currency, timezone } = ctx;
-  // Subtotal is total + discount − deliveryFee (recomputed for display; every
-  // money value in the payload is already server-derived).
-  const subtotal = detail.total + detail.sale.discount - detail.sale.deliveryFee;
 
   return (
-    <div className="invoice-print-area flex flex-col gap-3">
+    <div className="invoice-print-area flex flex-col gap-1">
+      {/* Shop header */}
       <div className="text-center">
-        <p className="text-lg font-bold">{shopName}</p>
+        <p className="text-base font-bold">{shopName}</p>
         {shopAddress ? (
-          <p className="text-sm text-muted-foreground">{shopAddress}</p>
+          <p className="text-xs text-muted-foreground">{shopAddress}</p>
         ) : null}
       </div>
 
-      {/* Order code + date on ONE tight line to save paper (was wrapping to
-          two lines each). */}
+      {/* Order code + date */}
       <div className="flex items-center justify-between gap-2 text-xs">
         <span className="whitespace-nowrap font-semibold">{detail.sale.code}</span>
         <span className="whitespace-nowrap text-muted-foreground">
@@ -255,44 +255,51 @@ function InvoiceBody({ ctx }: { ctx: InvoiceContext }) {
         </span>
       </div>
 
-      {/* Customer + order info — plain "Label: value" lines, no box.
-          Phone/address/delivery-by print only when present. Sender = shop. */}
-      <div className="flex flex-col gap-0.5 text-sm">
+      {/* Customer + order info — readable at base size */}
+      <div className="flex flex-col text-sm">
         <p>
-          <span className="text-muted-foreground">{t().sales.customer}:</span>{" "}
+          <span className="text-muted-foreground">{t().sales.customer}: </span>
           <span className="font-medium">{detail.customer.name}</span>
         </p>
         {detail.customer.phone ? (
           <p>
-            <span className="text-muted-foreground">{t().common.phone}:</span>{" "}
-            <span className="tabular-nums">{detail.customer.phone}</span>
+            <span className="text-muted-foreground">{t().common.phone}: </span>
+            <span className="tabular-nums">{phoneDisplay(detail.customer.phone)}</span>
           </p>
         ) : null}
         {detail.customer.address ? (
           <p>
-            <span className="text-muted-foreground">{t().sales.location}:</span>{" "}
+            <span className="text-muted-foreground">{t().common.address}: </span>
             {detail.customer.address}
           </p>
         ) : null}
         {detail.company ? (
           <p>
-            <span className="text-muted-foreground">{t().sales.deliveryBy}:</span>{" "}
+            <span className="text-muted-foreground">{t().sales.delivery}: </span>
             {detail.company.name}
           </p>
         ) : null}
-        <p>
-          <span className="text-muted-foreground">{t().sales.sender}:</span>{" "}
-          {shopPhone ? shopPhone : shopName}
-        </p>
+        {shopPhone ? (
+          <p>
+            <span className="text-muted-foreground">{t().sales.sender}: </span>
+            {shopPhone}
+          </p>
+        ) : null}
+        {detail.sale.note ? (
+          <p>
+            <span className="text-muted-foreground">{t().common.note}: </span>
+            {detail.sale.note}
+          </p>
+        ) : null}
       </div>
 
-      {/* Compact 3-column layout: Product (name COLOR/SIZE), Qty, Total. */}
-      <Table>
+      {/* Items table — compact, smaller font on paper */}
+      <Table className="print-compact-table">
         <TableHeader>
           <TableRow>
-            <TableHead className="py-1.5">{t().sales.item}</TableHead>
-            <TableHead className="py-1.5 text-right">{t().sales.qty}</TableHead>
-            <TableHead className="py-1.5 text-right">{t().sales.total}</TableHead>
+            <TableHead className="py-1 text-xs">{t().sales.item}</TableHead>
+            <TableHead className="py-1 text-right text-xs">{t().sales.qty}</TableHead>
+            <TableHead className="py-1 text-right text-xs">{t().sales.total}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -308,16 +315,16 @@ function InvoiceBody({ ctx }: { ctx: InvoiceContext }) {
               const suffix = variantSuffix(variant);
               return (
                 <TableRow key={item._id}>
-                  <TableCell className="py-1.5">
+                  <TableCell className="py-0.5 text-xs">
                     {product.name}
                     {suffix ? (
                       <span className="text-muted-foreground"> / {suffix}</span>
                     ) : null}
                   </TableCell>
-                  <TableCell className="py-1.5 text-right tabular-nums">
+                  <TableCell className="py-0.5 text-right tabular-nums text-xs">
                     {billed}
                   </TableCell>
-                  <TableCell className="py-1.5 text-right tabular-nums">
+                  <TableCell className="py-0.5 text-right tabular-nums text-xs">
                     {formatMoney(
                       item.unitPrice * billed - (item.discount ?? 0),
                       currency,
@@ -330,30 +337,21 @@ function InvoiceBody({ ctx }: { ctx: InvoiceContext }) {
         </TableBody>
       </Table>
 
-      <div className="flex flex-col gap-1 text-sm">
+      {/* Totals */}
+      <div className="flex flex-col text-xs">
         <div className="flex justify-between">
-          <span>{t().sales.subtotal}</span>
+          <span>{t().sales.discount}</span>
           <span className="tabular-nums">
-            {formatMoney(subtotal, currency, getLang())}
+            {formatMoney(detail.sale.discount, currency, getLang())}
           </span>
         </div>
-        {detail.sale.discount > 0 && (
-          <div className="flex justify-between text-muted-foreground">
-            <span>{t().sales.discount}</span>
-            <span className="tabular-nums">
-              −{formatMoney(detail.sale.discount, currency, getLang())}
-            </span>
-          </div>
-        )}
-        {/* Always shown — even when 0 (free delivery), so the customer sees
-            shipping was not charged. */}
-        <div className="flex justify-between text-muted-foreground">
+        <div className="flex justify-between">
           <span>{t().sales.deliveryFee}</span>
           <span className="tabular-nums">
             {formatMoney(detail.sale.deliveryFee, currency, getLang())}
           </span>
         </div>
-        <div className="flex justify-between border-t pt-1 font-bold">
+        <div className="flex justify-between border-t pt-0.5 font-bold">
           <span>{t().sales.total}</span>
           <span className="tabular-nums">
             {formatMoney(detail.total, currency, getLang())}
@@ -375,13 +373,17 @@ function InvoiceBody({ ctx }: { ctx: InvoiceContext }) {
         )}
       </div>
 
-      <div className="mt-8 flex justify-end">
-        <div className="w-40 border-t border-dashed pt-1 text-center text-xs text-muted-foreground">
-          {t().sales.signature}
-        </div>
-      </div>
+      {/* Payment status */}
+      <p className="text-center font-bold text-xs">
+        {t().sales.status}:{" "}
+        {detail.remaining <= 0
+          ? t().sales.paid
+          : detail.paid <= 0
+            ? t().sales.unpaid
+            : t().sales.partial}
+      </p>
 
-      <p className="text-center text-xs text-muted-foreground">
+      <p className="text-center text-[10px] text-muted-foreground">
         {t().sales.thankyou}
       </p>
     </div>
@@ -425,6 +427,7 @@ export function toPrintSale(
     customerAddress: detail.customer.address,
     channelName: detail.channel.name,
     companyName: detail.company?.name,
+    note: detail.sale.note ?? undefined,
     subtotal: detail.total + detail.sale.discount - detail.sale.deliveryFee,
     discount: detail.sale.discount,
     deliveryFee: detail.sale.deliveryFee,

@@ -3,11 +3,13 @@
 import {
   PlusSignIcon,
   ShoppingBag01Icon,
+  Task01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
+import type { RowSelectionState } from "@tanstack/react-table";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
@@ -32,11 +34,20 @@ import {
 } from "@/components/features/sales/sales-summary-cards";
 import { PageToolbar } from "@/components/features/shell/page-toolbar";
 import { Badge } from "@/components/ui/badge";
-import { buttonVariants } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useCurrentUser } from "@/hooks/use-current-user";
 import { usePersistentState } from "@/hooks/use-persistent-state";
-import { formatDateTime, formatMoney, getLang, t } from "@/lib/utils";
+import { formatDateTime, formatMoney, getLang, t, toastError } from "@/lib/utils";
+import { toast } from "sonner";
+import { ALL_STATUSES, type SaleStatus } from "@/components/features/sales/sale-status-flow";
 
 // T12 — Sales list (AGENTS.md). Filters: search by order code, status (with
 // "Today" and "Still owed" shortcuts), the sales page the order came from,
@@ -100,9 +111,43 @@ export default function SalesPage() {
   const [pageIndex, setPageIndex] = useState(0);
   const [cursors, setCursors] = useState<string[]>([]);
 
+  // Batch status update
+  const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
+  const [batchStatus, setBatchStatus] = useState<SaleStatus | "">("");
+  const batchUpdate = useMutation(api.sales.batchSetStatus);
+
+  const selectedIds = useMemo(
+    () =>
+      Object.entries(rowSelection)
+        .filter(([, v]) => v)
+        .map(([k]) => k as Id<"sales">),
+    [rowSelection],
+  );
+
+  const handleBatchUpdate = useCallback(async () => {
+    if (!batchStatus || selectedIds.length === 0) return;
+    try {
+      const result = await batchUpdate({
+        saleIds: selectedIds,
+        status: batchStatus as SaleStatus,
+      });
+      if (result.updated > 0) {
+        toast.success(t().sales.batchUpdated.replace("{n}", String(result.updated)));
+      }
+      if (result.skipped > 0) {
+        toast.warning(t().sales.batchSkipped.replace("{n}", String(result.skipped)));
+      }
+      setRowSelection({});
+      setBatchStatus("");
+    } catch (err) {
+      toastError(err);
+    }
+  }, [batchUpdate, batchStatus, selectedIds]);
+
   function resetPages() {
     setPageIndex(0);
     setCursors([]);
+    setRowSelection({});
   }
 
   function clearFilters() {
@@ -324,14 +369,59 @@ export default function SalesPage() {
       />
 
       <div className="p-4">
+        {/* Batch actions bar — appears when rows are selected */}
+        {selectedIds.length > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border bg-card p-3 shadow-sm">
+            <span className="text-sm font-medium">
+              {t().sales.batchSelected.replace("{n}", String(selectedIds.length))}
+            </span>
+            <Select
+              value={batchStatus}
+              onValueChange={(v) => setBatchStatus(v as SaleStatus)}
+            >
+              <SelectTrigger className="w-44">
+                <SelectValue placeholder={t().sales.batchUpdateStatus} />
+              </SelectTrigger>
+              <SelectContent>
+                {ALL_STATUSES.map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {t().status[s]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              size="sm"
+              disabled={!batchStatus}
+              onClick={handleBatchUpdate}
+            >
+              <HugeiconsIcon icon={Task01Icon} strokeWidth={2} className="size-4" />
+              {t().sales.batchUpdateStatus}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setRowSelection({});
+                setBatchStatus("");
+              }}
+            >
+              {t().common.cancel}
+            </Button>
+          </div>
+        )}
+
         <DataTable
           columns={columns}
           data={list?.page ?? []}
           persistKey="sales"
+          getRowId={(row) => row.sale._id}
           loading={list === undefined}
           totalCount={list?.total}
           pageIndex={pageIndex}
           pageSize={pageSize}
+          rowSelection={rowSelection}
+          onRowSelectionChange={setRowSelection}
           onPageSizeChange={(size) => {
             setPageSize(size);
             resetPages();

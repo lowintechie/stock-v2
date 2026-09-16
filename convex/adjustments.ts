@@ -1,8 +1,8 @@
 import { ConvexError, v } from "convex/values";
 
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
-import { assertDelta, assertQty, requireUser } from "./helpers";
+import { assertDelta, assertQty, normalizeName, requireUser } from "./helpers";
 import {
   checkIdempotency,
   recordIdempotency,
@@ -102,6 +102,71 @@ export const adjustStock = mutation({
   },
 });
 
+// Batch adjustment: stock in AND stock out in one transaction, multiple items.
+// Each row has its own variant + signed delta; the note is shared across the
+// batch so "Found 3 of X, damaged 2 of Y" is one operation in the history.
+export const batchAdjust = mutation({
+  args: {
+    rows: v.array(
+      v.object({
+        variantId: v.id("productVariants"),
+        delta: v.number(), // signed: +in, −out
+      })
+    ),
+    note: v.string(),
+  },
+  returns: v.number(), // number of ledger rows written
+  handler: async (ctx, args) => {
+    const { staff } = await requireUser(ctx);
+    if (args.rows.length === 0 || args.rows.length > 100) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Add at least one item and no more than 100.",
+      });
+    }
+    const note = cleanNote(args.note);
+    if (!note) {
+      throw new ConvexError({ code: "INVALID_INPUT", message: "Say why this stock moved." });
+    }
+    const seen = new Set<string>();
+    const now = Date.now();
+
+    for (const row of args.rows) {
+      if (seen.has(row.variantId)) {
+        throw new ConvexError({
+          code: "INVALID_INPUT",
+          message: "Duplicate item in the list.",
+        });
+      }
+      seen.add(row.variantId);
+      const delta = assertDelta(row.delta);
+      const variant = await ctx.db.get(row.variantId);
+      if (!variant) {
+        throw new ConvexError({ code: "NOT_FOUND", message: "Item not found." });
+      }
+      if (delta < 0) {
+        const current = await variantQty(ctx, row.variantId);
+        if (current + delta < 0) {
+          throw new ConvexError({
+            code: "OUT_OF_STOCK",
+            message: `Only ${current} in stock for one of the items.`,
+          });
+        }
+      }
+      await ctx.db.insert("stockLedger", {
+        variantId: row.variantId,
+        delta,
+        reason: "adjustment",
+        userId: staff._id,
+        ts: now,
+        note,
+      });
+    }
+
+    return args.rows.length;
+  },
+});
+
 // Full stocktake: the owner counts the physical shelf; only variants whose
 // count differs from the system write a row (delta = counted − system).
 // Matches write nothing — the ledger stays clean.
@@ -158,13 +223,25 @@ export const stocktakeList = query({
   returns: v.array(stocktakeVariant),
   handler: async (ctx, args) => {
     await requireUser(ctx);
-    const term = args.search?.trim().toLowerCase() ?? "";
-    const products = await ctx.db
-      .query("products")
-      .withIndex("by_nameLower", (q) =>
-        term ? q.gte("nameLower", term).lt("nameLower", `${term}￿`) : q
-      )
-      .take(1000);
+    const raw = args.search?.trim().toLowerCase() ?? "";
+    const term = normalizeName(raw);
+    // Try both normalized and original form for un-migrated nameLower values.
+    const hyphenForm = raw.replace(/ /g, "-");
+    const spaceForm = raw.replace(/-/g, " ");
+    const terms = [...new Set([term, raw, hyphenForm, spaceForm])].filter(Boolean);
+    let products: Doc<"products">[] = [];
+    for (const t of terms) {
+      const batch = await ctx.db
+        .query("products")
+        .withIndex("by_nameLower", (q) =>
+          t ? q.gte("nameLower", t).lt("nameLower", `${t}￿`) : q
+        )
+        .take(1000);
+      const seen = new Set(products.map((p) => p._id));
+      for (const p of batch) {
+        if (!seen.has(p._id)) products.push(p);
+      }
+    }
     const out: {
       variantId: Id<"productVariants">;
       productId: Id<"products">;

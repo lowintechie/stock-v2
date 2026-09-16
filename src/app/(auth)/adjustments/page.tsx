@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { api } from "@convex/_generated/api";
+import type { Id } from "@convex/_generated/dataModel";
 import { type Language } from "@/config/labels";
 import { PageToolbar } from "@/components/features/shell/page-toolbar";
 import { Button } from "@/components/ui/button";
@@ -27,7 +28,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useCurrentUser } from "@/hooks/use-current-user";
-import { useIdempotentSubmit } from "@/hooks/use-idempotent-submit";
 import { usePersistentState } from "@/hooks/use-persistent-state";
 import { useShop } from "@/hooks/use-shop";
 import { cn, formatDateTime, getLang, imageUrl, t, toastError } from "@/lib/utils";
@@ -132,7 +132,19 @@ export default function AdjustmentsPage() {
   );
 }
 
-// --- Quick manual in/out ----------------------------------------------------
+// --- Quick manual in/out — multi-item --------------------------------------
+
+type AdjustRow = {
+  id: number;
+  variantId: string | null;
+  direction: "in" | "out";
+  qtyText: string;
+};
+
+let nextRowId = 1;
+function newRow(): AdjustRow {
+  return { id: nextRowId++, variantId: null, direction: "in", qtyText: "" };
+}
 
 function QuickAdjustment({
   items,
@@ -142,20 +154,28 @@ function QuickAdjustment({
   loading: boolean;
 }) {
   const [search, setSearch] = useState("");
-  const [direction, setDirection] = usePersistentState<"in" | "out">(
-    "adjustments:direction",
-    "in",
-  );
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [qtyText, setQtyText] = useState("");
+  const [rows, setRows] = useState<AdjustRow[]>(() => [newRow()]);
   const [note, setNote] = useState("");
-  const adjust = useMutation(api.adjustments.adjustStock);
-  const adjustSubmit = useIdempotentSubmit({
-    operation: "adjustments.adjustStock",
-    resource: selectedId ?? "unselected",
-  });
+  const batchAdjust = useMutation(api.adjustments.batchAdjust);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
+
+  function updateRow(id: number, patch: Partial<AdjustRow>) {
+    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  }
+  function removeRow(id: number) {
+    setRows((prev) => (prev.length > 1 ? prev.filter((r) => r.id !== id) : prev));
+  }
+
+  // Validation
+  const parsed = rows.map((r) => {
+    const variant = items.find((i) => i.variantId === r.variantId) ?? null;
+    const qty = Number(r.qtyText);
+    const qtyOk = Number.isInteger(qty) && qty >= 1;
+    const oversell = r.direction === "out" && variant !== null && qtyOk && qty > variant.qty;
+    return { ...r, variant, qty, qtyOk, oversell, valid: r.variantId !== null && qtyOk && !oversell };
+  });
+  const allValid = parsed.every((r) => r.valid) && rows.length > 0 && note.trim().length > 0;
 
   const term = search.trim().toLowerCase();
   const filtered = useMemo(
@@ -163,33 +183,21 @@ function QuickAdjustment({
       (term ? items.filter((i) => i.label.toLowerCase().includes(term)) : items).slice(0, 60),
     [items, term],
   );
-  const selected = items.find((i) => i.variantId === selectedId) ?? null;
-  const qty = Number(qtyText);
-  const qtyOk = Number.isInteger(qty) && qty >= 1;
-  const oversell = direction === "out" && selected !== null && qtyOk && qty > selected.qty;
-  const canSave =
-    !submitting && selected !== null && qtyOk && !oversell && note.trim().length > 0;
 
   async function submit() {
     if (submittingRef.current) return;
-    if (!selected) {
-      toast.error(t().adjustments.pickFirst);
-      return;
-    }
     submittingRef.current = true;
     setSubmitting(true);
     try {
-      const adjustPayload = {
-        variantId: selected.variantId,
-        delta: direction === "in" ? qty : -qty,
-        note: note.trim(),
-      };
-      const idempotencyKey = adjustSubmit.begin(adjustPayload);
-      await adjust({ ...adjustPayload, idempotencyKey });
-      adjustSubmit.complete(adjustPayload, idempotencyKey);
+      const batchRows = parsed
+        .filter((r) => r.valid)
+        .map((r) => ({
+          variantId: r.variantId! as Id<"productVariants">,
+          delta: r.direction === "in" ? r.qty : -r.qty,
+        }));
+      await batchAdjust({ rows: batchRows, note: note.trim() });
       toast.success(t().adjustments.adjustmentSaved);
-      setSelectedId(null);
-      setQtyText("");
+      setRows([newRow()]);
       setNote("");
     } catch (err) {
       toastError(err);
@@ -200,8 +208,7 @@ function QuickAdjustment({
   }
 
   function reset() {
-    setSelectedId(null);
-    setQtyText("");
+    setRows([newRow()]);
     setNote("");
   }
 
@@ -230,25 +237,47 @@ function QuickAdjustment({
           ) : (
             <ul className="flex max-h-72 flex-col gap-1 overflow-y-auto">
               {filtered.map((item) => {
-                const isSelected = item.variantId === selectedId;
+                // Check if this variant is already in any row
+                const inRow = rows.some((r) => r.variantId === item.variantId);
                 return (
                   <li key={item.variantId}>
                     <button
                       type="button"
-                      onClick={() =>
-                        setSelectedId(item.variantId === selectedId ? null : item.variantId)
-                      }
+                      onClick={() => {
+                        if (inRow) {
+                          // Remove from the row that has it
+                          setRows((prev) => {
+                            const idx = prev.findIndex((r) => r.variantId === item.variantId);
+                            if (idx === -1) return prev;
+                            const next = [...prev];
+                            next[idx] = { ...next[idx], variantId: null };
+                            return next;
+                          });
+                        } else {
+                          // Add to the first empty row, or create a new one
+                          setRows((prev) => {
+                            const emptyIdx = prev.findIndex((r) => r.variantId === null);
+                            if (emptyIdx !== -1) {
+                              const next = [...prev];
+                              next[emptyIdx] = { ...next[emptyIdx], variantId: item.variantId };
+                              return next;
+                            }
+                            const nr = newRow();
+                            nr.variantId = item.variantId;
+                            return [...prev, nr];
+                          });
+                        }
+                      }}
                       className={cn(
                         "flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors",
-                        isSelected
+                        inRow
                           ? "border-primary bg-primary text-primary-foreground"
                           : "border-border bg-background hover:bg-muted",
                       )}
                     >
-                      {/* Product thumbnail */}
                       <span className={cn(
                         "flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-md border",
-                        isSelected ? "border-primary-foreground/20" : "border-border bg-muted",
+                        inRow ? "border-primary-foreground/20" : "border-border bg-muted",
                       )}>
                         {item.imageStorageId ? (
                           // eslint-disable-next-line @next/next/no-img-element
@@ -263,22 +292,18 @@ function QuickAdjustment({
                             strokeWidth={2}
                             className={cn(
                               "size-4",
-                              isSelected ? "text-primary-foreground/60" : "text-muted-foreground",
+                              inRow ? "text-primary-foreground/60" : "text-muted-foreground",
                             )}
                           />
                         )}
                       </span>
-
-                      {/* Label */}
                       <span className="min-w-0 flex-1 truncate text-sm font-medium">
                         {item.label}
                       </span>
-
-                      {/* Stock badge */}
                       <span
                         className={cn(
                           "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium",
-                          isSelected
+                          inRow
                             ? "bg-primary-foreground/20 text-primary-foreground"
                             : item.qty === 0
                               ? "bg-destructive/10 text-destructive"
@@ -296,53 +321,104 @@ function QuickAdjustment({
         </CardContent>
       </Card>
 
-      {/* The move itself */}
+      {/* Adjustment rows */}
       <Card>
         <CardHeader>
-          <CardTitle>
-            {direction === "in" ? t().adjustments.stockIn : t().adjustments.stockOut}
-          </CardTitle>
-          <CardDescription>
-            {selected ? (
-              <span className="flex items-center gap-2">
-                <ProductThumb storageId={selected.imageStorageId} size="sm" />
-                <span>
-                  {selected.label} — {t().adjustments.inStock}: {String(selected.qty)}
-                </span>
-              </span>
-            ) : (
-              t().adjustments.pickFirst
-            )}
-          </CardDescription>
+          <CardTitle>{t().adjustments.adjustItems}</CardTitle>
+          <CardDescription>{t().adjustments.adjustItemsHint}</CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <div className="grid grid-cols-2 gap-2">
-            <Button
-              type="button"
-              variant={direction === "in" ? "default" : "outline"}
-              onClick={() => setDirection("in")}
+        <CardContent className="flex flex-col gap-3">
+          {parsed.map((row, idx) => (
+            <div
+              key={row.id}
+              className={cn(
+                "flex flex-wrap items-end gap-2 rounded-lg border p-3 sm:flex-nowrap",
+                row.variantId !== null && !row.valid && "border-destructive",
+              )}
             >
-              {t().adjustments.stockIn}
-            </Button>
-            <Button
-              type="button"
-              variant={direction === "out" ? "default" : "outline"}
-              onClick={() => setDirection("out")}
-            >
-              {t().adjustments.stockOut}
-            </Button>
-          </div>
-          <label className="flex flex-col gap-1 text-sm">
-            <span className="text-muted-foreground">{t().adjustments.qty}</span>
-            <Input
-              type="number"
-              inputMode="numeric"
-              min={1}
-              value={qtyText}
-              onChange={(e) => setQtyText(e.target.value)}
-              className="max-w-40"
-            />
-          </label>
+              {/* Item display */}
+              <div className="min-w-0 flex-1">
+                <span className="text-xs text-muted-foreground">
+                  #{idx + 1}
+                </span>
+                {row.variant ? (
+                  <div className="flex items-center gap-2">
+                    <ProductThumb storageId={row.variant.imageStorageId} size="sm" />
+                    <span className="truncate text-sm font-medium">{row.variant.label}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      ({String(row.variant.qty)})
+                    </span>
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">{t().adjustments.pickFirst}</p>
+                )}
+              </div>
+
+              {/* Direction */}
+              <div className="flex gap-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={row.direction === "in" ? "default" : "outline"}
+                  onClick={() => updateRow(row.id, { direction: "in" })}
+                >
+                  {t().adjustments.stockIn}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={row.direction === "out" ? "default" : "outline"}
+                  onClick={() => updateRow(row.id, { direction: "out" })}
+                >
+                  {t().adjustments.stockOut}
+                </Button>
+              </div>
+
+              {/* Qty */}
+              <Input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                value={row.qtyText}
+                onChange={(e) => updateRow(row.id, { qtyText: e.target.value })}
+                placeholder={t().adjustments.qty}
+                className="w-20"
+              />
+
+              {/* Remove */}
+              {rows.length > 1 && (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  onClick={() => removeRow(row.id)}
+                >
+                  <HugeiconsIcon icon={RotateCwSquareIcon} size={16} className="text-destructive" />
+                </Button>
+              )}
+
+              {/* Oversell warning */}
+              {row.oversell && (
+                <p className="w-full text-xs text-destructive">
+                  {t().adjustments.notEnough.replace("{n}", String(row.variant?.qty ?? 0))}
+                </p>
+              )}
+            </div>
+          ))}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setRows((prev) => [...prev, newRow()])}
+          >
+            + {t().adjustments.addItem}
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Note */}
+      <Card>
+        <CardContent className="flex flex-col gap-3 pt-6">
           <label className="flex flex-col gap-1 text-sm">
             <span className="text-muted-foreground">{t().adjustments.reasonNote}</span>
             <Textarea
@@ -369,17 +445,12 @@ function QuickAdjustment({
               </Button>
             ))}
           </div>
-          {oversell && (
-            <p className="text-sm text-destructive">
-              {t().adjustments.notEnough.replace("{n}", String(selected?.qty ?? 0))}
-            </p>
-          )}
         </CardContent>
       </Card>
 
       {/* Sticky footer: submit bottom-left + colored cancel with icon */}
       <div className="sticky bottom-3 z-10 flex items-center gap-2 rounded-lg border bg-card p-3 shadow-md">
-        <Button onClick={submit} disabled={!canSave}>
+        <Button onClick={submit} disabled={!allValid || submitting}>
           {t().adjustments.saveAdjustment}
         </Button>
         <Button type="button" variant="destructive" onClick={reset}>
