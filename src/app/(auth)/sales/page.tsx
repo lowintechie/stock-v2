@@ -221,7 +221,6 @@ export default function SalesPage() {
       {
         accessorKey: "createdAt",
         header: t().sales.date,
-        enableSorting: false,
         cell: ({ row }) => (
           <span className="text-muted-foreground">
             {formatDateTime(row.original.sale.createdAt, shop?.timezone ?? "Asia/Phnom_Penh", getLang())}
@@ -231,7 +230,6 @@ export default function SalesPage() {
       {
         accessorKey: "customerName",
         header: t().sales.customer,
-        enableSorting: false,
         cell: ({ row }) => (
           <span>
             {row.original.customerName}
@@ -247,7 +245,6 @@ export default function SalesPage() {
       {
         accessorKey: "channelName",
         header: t().sales.channel,
-        enableSorting: false,
         cell: ({ row }) => (
           <span className="text-muted-foreground">{row.original.channelName}</span>
         ),
@@ -255,13 +252,11 @@ export default function SalesPage() {
       {
         accessorKey: "status",
         header: t().sales.status,
-        enableSorting: false,
         cell: ({ row }) => <SaleStatusBadge status={row.original.sale.status} />,
       },
       {
         accessorKey: "paymentStatus",
         header: t().sales.paymentStatus,
-        enableSorting: false,
         cell: ({ row }) => (
           <PaymentStatusBadge
             status={row.original.sale.status}
@@ -273,7 +268,6 @@ export default function SalesPage() {
       {
         accessorKey: "total",
         header: t().sales.total,
-        enableSorting: false,
         cell: ({ row }) => (
           <span className="tabular-nums">
             {formatMoney(row.original.total, shop?.currency ?? "USD", getLang())}
@@ -283,7 +277,6 @@ export default function SalesPage() {
       {
         accessorKey: "paid",
         header: t().sales.paid,
-        enableSorting: false,
         cell: ({ row }) => (
           <span className="tabular-nums">
             {formatMoney(row.original.paid, shop?.currency ?? "USD", getLang())}
@@ -293,7 +286,6 @@ export default function SalesPage() {
       {
         accessorKey: "remaining",
         header: t().sales.remaining,
-        enableSorting: false,
         cell: ({ row }) =>
           row.original.remaining > 0 ? (
             <span className="font-medium tabular-nums">

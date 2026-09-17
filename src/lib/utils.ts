@@ -151,11 +151,24 @@ function errorCodeOf(err: unknown): string {
   return "GENERIC";
 }
 
-/** Map a thrown error to a short friendly message in the user's language. */
+function errorServerMessage(err: unknown): string | undefined {
+  if (err instanceof ConvexError) {
+    const data = err.data as { message?: string } | undefined;
+    if (data?.message) return data.message;
+  }
+  return undefined;
+}
+
+/** Map a thrown error to a short friendly message in the user's language.
+ *  Prefers the server's specific message (e.g. "That's more than the order
+ *  is still owed.") over the generic code-based label. */
 export function errorMessage(err: unknown): string {
   const lang = getLang();
-  const code = errorCodeOf(err);
   const dict = labels[lang].errors;
+  // The server's message is already human-readable — show it directly.
+  const serverMsg = errorServerMessage(err);
+  if (serverMsg) return serverMsg;
+  const code = errorCodeOf(err);
   return code in dict ? dict[code as keyof typeof dict] : dict.GENERIC;
 }
 

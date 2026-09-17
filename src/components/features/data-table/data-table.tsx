@@ -11,6 +11,7 @@ import {
 import {
   columnOrderingFeature,
   columnVisibilityFeature,
+  coreRowModelsFeature,
   rowSelectionFeature,
   rowSortingFeature,
   tableFeatures,
@@ -79,6 +80,7 @@ const dataTableFeatures = tableFeatures({
   columnOrderingFeature,
   columnVisibilityFeature,
   rowSelectionFeature,
+  coreRowModelsFeature,
   // Type-only slot: every ColumnDef built through DataTableColumn<T> gets
   // meta?: DataTableColumnMeta.
   columnMeta: {} as DataTableColumnMeta,
@@ -232,6 +234,35 @@ export function DataTable<TData extends RowData>({
   const [internalSorting, setInternalSorting] = useState<SortingState>([]);
   const sortingState = isSortingControlled ? sorting : internalSorting;
 
+  // Sort data client-side when not server-controlled. TanStack v9's
+  // rowSortingFeature doesn't reliably reorder rows, so we sort the array
+  // ourselves and pass the result to the table.
+  const sortedData = useMemo(() => {
+    if (!sortingState.length) return data;
+    const sorted = [...data];
+    for (const sort of [...sortingState].reverse()) {
+      const col = effectiveColumns.find(
+        (c) => (c.id ?? (c as { accessorKey?: string }).accessorKey) === sort.id
+      );
+      if (!col) continue;
+      const accessor = (col as { accessorKey?: string }).accessorKey;
+      if (!accessor) continue;
+      sorted.sort((a, b) => {
+        const av = (a as Record<string, unknown>)[accessor];
+        const bv = (b as Record<string, unknown>)[accessor];
+        if (av == null && bv == null) return 0;
+        if (av == null) return 1;
+        if (bv == null) return -1;
+        let cmp = 0;
+        if (typeof av === "number" && typeof bv === "number") cmp = av - bv;
+        else if (typeof av === "string" && typeof bv === "string") cmp = av.localeCompare(bv);
+        else cmp = String(av).localeCompare(String(bv));
+        return sort.desc ? -cmp : cmp;
+      });
+    }
+    return sorted;
+  }, [data, sortingState, effectiveColumns]);
+
   // Effective column order = persisted order, pruned to existing columns,
   // with any new columns appended in definition order.
   const defaultOrder = useMemo(
@@ -252,12 +283,12 @@ export function DataTable<TData extends RowData>({
 
   const table = useTable({
     features: dataTableFeatures,
-    data,
+    data: isSortingControlled ? data : sortedData,
     columns: effectiveColumns,
     getRowId: getRowId ?? defaultGetRowId,
     manualSorting: true,
     state: {
-      ...(isSortingControlled ? { sorting: sortingState } : {}),
+      sorting: sortingState,
       columnOrder: effectiveOrder,
       columnVisibility: visibilityState,
       ...(enableSelection ? { rowSelection } : {}),
@@ -352,27 +383,8 @@ export function DataTable<TData extends RowData>({
                       <TableHead
                         key={header.id}
                         colSpan={header.colSpan}
-                        draggable
-                        onDragStart={(e) => {
-                          e.dataTransfer.effectAllowed = "move";
-                          setDragId(col.id);
-                        }}
-                        onDragOver={(e) => {
-                          e.preventDefault();
-                          if (col.id !== dragId) setOverId(col.id);
-                        }}
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          onDrop();
-                        }}
-                        onDragEnd={() => {
-                          setDragId(null);
-                          setOverId(null);
-                        }}
                         className={cn(
-                          "cursor-move select-none",
-                          dragId === col.id && "opacity-50",
-                          overId === col.id && dragId !== col.id && "border-s-2 border-primary",
+                          "select-none",
                           // Opaque background required — rows scroll under it.
                           stickyHeader && "sticky top-0 z-10 bg-background",
                           col.columnDef.meta?.headerClassName,
@@ -382,7 +394,7 @@ export function DataTable<TData extends RowData>({
                           <button
                             type="button"
                             onClick={col.getToggleSortingHandler()}
-                            className="inline-flex items-center gap-1"
+                            className="inline-flex cursor-pointer items-center gap-1"
                           >
                             <table.FlexRender header={header} />
                             {sorted === "asc" && (
@@ -401,7 +413,32 @@ export function DataTable<TData extends RowData>({
                             )}
                           </button>
                         ) : (
-                          <table.FlexRender header={header} />
+                          <span
+                            draggable
+                            onDragStart={(e) => {
+                              e.dataTransfer.effectAllowed = "move";
+                              setDragId(col.id);
+                            }}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              if (col.id !== dragId) setOverId(col.id);
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              onDrop();
+                            }}
+                            onDragEnd={() => {
+                              setDragId(null);
+                              setOverId(null);
+                            }}
+                            className={cn(
+                              "cursor-move",
+                              dragId === col.id && "opacity-50",
+                              overId === col.id && dragId !== col.id && "border-s-2 border-primary",
+                            )}
+                          >
+                            <table.FlexRender header={header} />
+                          </span>
                         )}
                       </TableHead>
                     );
