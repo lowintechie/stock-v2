@@ -225,21 +225,29 @@ export const stocktakeList = query({
     await requireUser(ctx);
     const raw = args.search?.trim().toLowerCase() ?? "";
     const term = normalizeName(raw);
-    // Try both normalized and original form for un-migrated nameLower values.
-    const hyphenForm = raw.replace(/ /g, "-");
-    const spaceForm = raw.replace(/-/g, " ");
-    const terms = [...new Set([term, raw, hyphenForm, spaceForm])].filter(Boolean);
     let products: Doc<"products">[] = [];
-    for (const t of terms) {
-      const batch = await ctx.db
+    if (!term) {
+      // No search term - return all products.
+      products = await ctx.db
         .query("products")
-        .withIndex("by_nameLower", (q) =>
-          t ? q.gte("nameLower", t).lt("nameLower", `${t}￿`) : q
-        )
+        .withIndex("by_nameLower")
         .take(1000);
-      const seen = new Set(products.map((p) => p._id));
-      for (const p of batch) {
-        if (!seen.has(p._id)) products.push(p);
+    } else {
+      // Try both normalized and original form for un-migrated nameLower values.
+      const hyphenForm = raw.replace(/ /g, "-");
+      const spaceForm = raw.replace(/-/g, " ");
+      const terms = [...new Set([term, raw, hyphenForm, spaceForm])].filter(Boolean);
+      for (const t of terms) {
+        const batch = await ctx.db
+          .query("products")
+          .withIndex("by_nameLower", (q) =>
+            q.gte("nameLower", t).lt("nameLower", t + "\uffff")
+          )
+          .take(1000);
+        const seen = new Set(products.map((p) => p._id));
+        for (const p of batch) {
+          if (!seen.has(p._id)) products.push(p);
+        }
       }
     }
     const out: {
