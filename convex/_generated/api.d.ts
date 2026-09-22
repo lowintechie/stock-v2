@@ -29,6 +29,8 @@ import type * as payments from "../payments.js";
 import type * as pos from "../pos.js";
 import type * as products from "../products.js";
 import type * as purchases from "../purchases.js";
+import type * as rateLimit from "../rateLimit.js";
+import type * as rateLimiter from "../rateLimiter.js";
 import type * as reports from "../reports.js";
 import type * as sales from "../sales.js";
 import type * as seed from "../seed.js";
@@ -67,6 +69,8 @@ declare const fullApi: ApiFromModules<{
   pos: typeof pos;
   products: typeof products;
   purchases: typeof purchases;
+  rateLimit: typeof rateLimit;
+  rateLimiter: typeof rateLimiter;
   reports: typeof reports;
   sales: typeof sales;
   seed: typeof seed;
@@ -106,4 +110,5 @@ export declare const internal: FilterApi<
 
 export declare const components: {
   betterAuth: import("@convex-dev/better-auth/_generated/component.js").ComponentApi<"betterAuth">;
+  ratelimiter: import("@convex-dev/ratelimiter/_generated/component.js").ComponentApi<"ratelimiter">;
 };
