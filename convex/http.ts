@@ -18,6 +18,9 @@ function getIp(request: Request): string {
 const rateLimitedAuth = httpAction(async (ctx, request) => {
   const ip = getIp(request);
   const url = new URL(request.url);
+  console.log(
+    `[AUTH CHECK] IP: ${ip} | Method: ${request.method} | Path: ${url.pathname}`,
+  );
   const isSignIn =
     url.pathname.includes("/sign-in") || url.pathname.includes("/login");
   const isSignUp =
