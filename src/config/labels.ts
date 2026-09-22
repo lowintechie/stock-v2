@@ -1093,6 +1093,8 @@ export const labels = {
         "Tick this when the package already went out and the customer refused it — the shipping fee stays owed on the cancelled order.",
       refundHint: "Money given back to the customer is recorded here as a refund.",
       paymentAdded: "Payment received.",
+      paymentDateUpdated: "Payment date updated.",
+      editPaymentDate: "Edit payment date",
       refundAdded: "Refund recorded.",
       statusUpdated: "Order status updated.",
       allStatuses: "All statuses",
@@ -2369,6 +2371,8 @@ export const labels = {
       refundHint:
         "ប្រាក់ដែលបង្វិលទៅអតិថិជនវិញ កត់ត្រានៅទីនេះ។",
       paymentAdded: "បានទទួលប្រាក់។",
+      paymentDateUpdated: "បានធ្វើបច្ចុប្បន្នភាពកាលបរិច្ឆេទបង់ប្រាក់។",
+      editPaymentDate: "កែកាលបរិច្ឆេទបង់ប្រាក់",
       refundAdded: "បានកត់ត្រាការបង្វិលប្រាក់។",
       statusUpdated: "បានធ្វើបច្ចុប្បន្នភាពស្ថានភាពការបញ្ជាទិញ។",
       allStatuses: "ស្ថានភាពទាំងអស់",

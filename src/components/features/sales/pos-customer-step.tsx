@@ -58,15 +58,18 @@ export function PosCustomerStep({
     user == null ? "skip" : { search: debouncedQuery.trim() || undefined }
   );
 
-  const labelById = useMemo(
+  const items = useMemo(
     () =>
-      new Map<string, string>(
-        (customers ?? []).map((c) => [
-          c._id,
-          `${c.name}${c.phone ? ` · ${c.phone}` : ""}`,
-        ])
-      ),
+      (customers ?? []).map((c) => ({
+        value: c._id,
+        label: `${c.name}${c.phone ? ` · ${c.phone}` : ""}`,
+      })),
     [customers]
+  );
+
+  const labelByValue = useMemo(
+    () => new Map<string, string>(items.map((i) => [i.value, i.label])),
+    [items]
   );
 
   // --- New-customer dialog ---
@@ -105,15 +108,10 @@ export function PosCustomerStep({
       <div className="flex w-full items-center gap-2">
         <div className="min-w-0 flex-1">
           <Combobox
-            items={(customers ?? []).map((c) => c._id)}
-            itemToStringLabel={(item) => {
-              if (item == null) return "";
-              const value =
-                typeof item === "object" && "value" in item
-                  ? String((item as { value: unknown }).value)
-                  : String(item);
-              return labelById.get(value) ?? value;
-            }}
+            items={items}
+            itemToStringLabel={(v) =>
+              v == null ? "" : labelByValue.get(String(v)) ?? String(v)
+            }
             value={customerId}
             onValueChange={(value) => {
               const found = (customers ?? []).find((c) => c._id === value);

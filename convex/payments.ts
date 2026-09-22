@@ -136,6 +136,56 @@ export const receive = mutation({
 });
 
 /**
+ * Edit a payment's received date. Only the date can be changed — amount,
+ * method, and sale are immutable. Recomputes receivedDay from the shop
+ * timezone. Appends a saleEvent for the audit trail.
+ */
+export const update = mutation({
+  args: {
+    paymentId: v.id("payments"),
+    receivedAt: v.number(),
+  },
+  returns: paymentDoc,
+  handler: async (ctx, args) => {
+    const { staff } = await requireUser(ctx);
+    const shop = await getShop(ctx);
+    const payment = await ctx.db.get(args.paymentId);
+    if (!payment) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Payment not found." });
+    }
+    const now = Date.now();
+    if (
+      !Number.isFinite(args.receivedAt) ||
+      args.receivedAt <= 0 ||
+      args.receivedAt > now
+    ) {
+      throw new ConvexError({
+        code: "INVALID_PAYMENT",
+        message: "Payment date can't be in the future.",
+      });
+    }
+    const receivedAt = Math.floor(args.receivedAt);
+    const receivedDay = dayString(receivedAt, shop.timezone);
+    if (receivedAt === payment.receivedAt) {
+      return payment; // no-op
+    }
+    await ctx.db.patch(payment._id, { receivedAt, receivedDay });
+    await ctx.db.insert("saleEvents", {
+      saleId: payment.saleId,
+      type: "payment_date_changed",
+      summary: `Payment date changed.`,
+      payload: {
+        oldDate: String(payment.receivedAt),
+        newDate: String(receivedAt),
+      },
+      userId: staff._id,
+      ts: Date.now(),
+    });
+    return (await ctx.db.get(payment._id))!;
+  },
+});
+
+/**
  * Give money back to the customer: a payments row with a NEGATIVE amount
  * (method "refund") — paid/remaining and daily reports recompute themselves.
  * Can't refund more than has actually been paid. Thin wrapper over the

@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "convex/react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api } from "@convex/_generated/api";
 import type { Id } from "@convex/_generated/dataModel";
@@ -44,20 +44,24 @@ export function CustomerFilter({
     user == null ? "skip" : { search: debouncedQuery.trim() || undefined }
   );
 
+  const items = useMemo(
+    () =>
+      (customers ?? []).map((c) => ({
+        value: c._id,
+        label: `${c.name}${c.phone ? ` · ${c.phone}` : ""}`,
+      })),
+    [customers]
+  );
+
+  const labelByValue = useMemo(
+    () => new Map(items.map((i) => [i.value, i.label])),
+    [items]
+  );
+
   return (
     <Combobox
-      items={(customers ?? []).map((c) => c._id)}
-      itemToStringLabel={(item) => {
-        if (item == null) return "";
-        const id =
-          typeof item === "object" && "value" in item
-            ? String((item as { value: unknown }).value)
-            : String(item);
-        const customer = (customers ?? []).find((c) => c._id === id);
-        return customer
-          ? `${customer.name}${customer.phone ? ` · ${customer.phone}` : ""}`
-          : "";
-      }}
+      items={items}
+      itemToStringLabel={(v) => (v == null ? "" : labelByValue.get(v) ?? v)}
       value={value === "all" ? null : value}
       onValueChange={(v) => onChange(v ? (v as Id<"customers">) : "all")}
       // Only user typing drives the server search — Base UI's programmatic
