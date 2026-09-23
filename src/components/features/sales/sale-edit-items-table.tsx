@@ -39,7 +39,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useCurrentUser } from "@/hooks/use-current-user";
-import { cn, formatMoney, imageUrl, inputToCents, t } from "@/lib/utils";
+import { cn, formatMoney, imageUrl, inputToCents, t, comboboxLabel } from "@/lib/utils";
 
 // The editable items table for the full-page order editor. Everything here is
 // LOCAL state — no quantity moves in stock until the page is saved, which is
@@ -534,9 +534,8 @@ export function SaleEditItemsTable({
         <Combobox
           key={pickerKey}
           items={pickerItems}
-          itemToStringLabel={(v) =>
-            v == null ? "" : pickerLabelByValue.get(v) ?? v
-          }
+          filter={null}
+          itemToStringLabel={comboboxLabel(pickerLabelByValue)}
           value={null}
           onValueChange={(value) => {
             if (typeof value === "string" && value) {

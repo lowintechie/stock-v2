@@ -195,7 +195,10 @@ function lineValue(item: Doc<"saleItems">): number {
  * so their bill stays exactly zero. */
 export function chargedDeliveryFee(sale: Doc<"sales">): number {
   if (sale.status !== "cancelled") return sale.deliveryFee;
-  return sale.chargeDeliveryOnCancel ? sale.deliveryFee : 0;
+  if (!sale.chargeDeliveryOnCancel) return 0;
+  // Use the explicit cancel shipping fee if set (allows charging on
+  // free-shipping orders), otherwise fall back to the original delivery fee.
+  return sale.cancelShippingFee ?? sale.deliveryFee;
 }
 
 /** Order total from its lines + discount + delivery fee (integer cents).
@@ -1413,7 +1416,7 @@ async function transitionSaleStatus(
   sale: Doc<"sales">,
   staff: Doc<"users">,
   target: Doc<"sales">["status"],
-  opts: { deliveryFee: number; chargeDeliveryFee?: boolean; note?: string },
+  opts: { deliveryFee: number; chargeDeliveryFee?: boolean; cancelShippingFee?: number; note?: string },
   now: number
 ): Promise<void> {
   const allowed = ALLOWED_TRANSITIONS[sale.status] ?? [];
@@ -1440,11 +1443,9 @@ async function transitionSaleStatus(
     // (T13) do the same for single lines.
     await cancelOutstanding(ctx, sale, staff, `Cancelled ${sale.code}`, now);
   }
-  // Only a cancel can bill the trip, and only when a fee was set on the
-  // order — anything else is a client mistake, so it's ignored rather than
-  // silently written onto the row.
-  const chargeTrip =
-    opts.chargeDeliveryFee === true && target === "cancelled" && opts.deliveryFee > 0;
+  // Only a cancel can bill the trip — anything else is a client mistake,
+  // so it's ignored rather than silently written onto the row.
+  const chargeTrip = opts.chargeDeliveryFee === true && target === "cancelled";
   if (target === "delivered") {
     // "Delivered" means the customer took everything: fill every line's
     // delivered qty. Pieces previously cancelled came back to the shelf,
@@ -1460,13 +1461,18 @@ async function transitionSaleStatus(
       : sale.deliveredAt;
   const patch: Partial<Doc<"sales">> = { status: target };
   if (deliveredAt !== undefined) patch.deliveredAt = deliveredAt;
-  if (chargeTrip) patch.chargeDeliveryOnCancel = true;
+  if (chargeTrip) {
+    patch.chargeDeliveryOnCancel = true;
+    if (opts.cancelShippingFee !== undefined) {
+      patch.cancelShippingFee = opts.cancelShippingFee;
+    }
+  }
   await ctx.db.patch(sale._id, patch);
   await ctx.db.insert("saleEvents", {
     saleId: sale._id,
     type: "status_changed",
     summary: chargeTrip
-      ? `Status ${sale.status} → ${target}. Shipping ${moneyStr(opts.deliveryFee)} still charged.`
+      ? `Status ${sale.status} → ${target}. Shipping ${moneyStr(opts.cancelShippingFee ?? opts.deliveryFee)} still charged.`
       : `Status ${sale.status} → ${target}.`,
     payload: {
       from: sale.status,
@@ -1486,6 +1492,9 @@ export const setStatus = mutation({
     // Cancelling only: the package went out and the trip happened, so the
     // customer still pays shipping even though the goods came back.
     chargeDeliveryFee: v.optional(v.boolean()),
+    // When cancelling: the shipping fee amount to collect from the customer.
+    // Creates a payment automatically. Overrides chargeDeliveryFee.
+    shippingFeeAmount: v.optional(v.number()),
     // Guided cancellation (cancel review): the physical outcome of every
     // held piece, an optional refund, and an optional reason — all applied
     // in THIS one transaction, never a separate half-applied write.
@@ -1506,7 +1515,8 @@ export const setStatus = mutation({
       args.status !== "cancelled" &&
       (args.resolutions !== undefined ||
         args.refund !== undefined ||
-        args.reason !== undefined)
+        args.reason !== undefined ||
+        args.shippingFeeAmount !== undefined)
     ) {
       throw new ConvexError({
         code: "INVALID_INPUT",
@@ -1534,6 +1544,38 @@ export const setStatus = mutation({
       );
       now += 1;
     }
+    // When cancelling with a shipping fee amount, create a payment for it.
+    // This replaces the old chargeDeliveryFee boolean — the fee is collected
+    // immediately rather than left as "owed".
+    const shippingFeeToCollect =
+      args.status === "cancelled" && (args.shippingFeeAmount ?? 0) > 0
+        ? assertCents(args.shippingFeeAmount!, "shippingFeeAmount")
+        : 0;
+    if (shippingFeeToCollect > 0) {
+      const shop = await getShop(ctx);
+      const day = dayString(now, shop.timezone);
+      await ctx.db.insert("payments", {
+        saleId: sale._id,
+        amount: shippingFeeToCollect,
+        receivedAt: now,
+        receivedDay: day,
+        method: "cash",
+        userId: staff._id,
+        note: "Shipping fee collected on cancellation",
+      });
+      await ctx.db.insert("saleEvents", {
+        saleId: sale._id,
+        type: "payment",
+        summary: `Shipping fee payment of ${moneyStr(shippingFeeToCollect)} collected on cancellation.`,
+        payload: { amount: String(shippingFeeToCollect), method: "cash" },
+        userId: staff._id,
+        ts: now,
+      });
+      now += 1;
+    }
+    const shouldChargeDelivery =
+      args.status === "cancelled" &&
+      ((args.shippingFeeAmount ?? 0) > 0 || args.chargeDeliveryFee === true);
     await transitionSaleStatus(
       ctx,
       sale,
@@ -1541,7 +1583,8 @@ export const setStatus = mutation({
       args.status,
       {
         deliveryFee: sale.deliveryFee,
-        chargeDeliveryFee: args.chargeDeliveryFee,
+        chargeDeliveryFee: shouldChargeDelivery,
+        ...(shippingFeeToCollect > 0 ? { cancelShippingFee: shippingFeeToCollect } : {}),
         note: args.note ?? args.reason,
       },
       now

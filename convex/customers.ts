@@ -255,7 +255,40 @@ export const listActive = query({
             q.gte("nameLower", term).lt("nameLower", `${term}￿`)
           );
     const rows = await build().order("asc").take(100);
-    return rows.filter((c) => c.active);
+    const active = rows.filter((c) => c.active);
+
+    // When not filtering by search, ensure the shop's default customer and the
+    // seeded Walk-in Customer appear at the very top and are never excluded by
+    // the 100-item cap in production databases.
+    if (!term) {
+      const priorityIds = new Set<string>();
+      const priority: typeof active = [];
+
+      const shop = await ctx.db.query("shop").first();
+      if (shop?.defaultCustomerId) {
+        const defCust = await ctx.db.get(shop.defaultCustomerId);
+        if (defCust && defCust.active) {
+          priority.push(defCust);
+          priorityIds.add(defCust._id);
+        }
+      }
+
+      const walkIn = await ctx.db
+        .query("customers")
+        .withIndex("by_isWalkIn", (q) => q.eq("isWalkIn", true))
+        .first();
+      if (walkIn && walkIn.active && !priorityIds.has(walkIn._id)) {
+        priority.push(walkIn);
+        priorityIds.add(walkIn._id);
+      }
+
+      if (priority.length > 0) {
+        const remainder = active.filter((c) => !priorityIds.has(c._id));
+        return [...priority, ...remainder];
+      }
+    }
+
+    return active;
   },
 });
 

@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { centsToInput, imageUrl, inputToCents, t } from "@/lib/utils";
+import { centsToInput, imageUrl, inputToCents, t, comboboxLabel } from "@/lib/utils";
 
 // One purchase line as built by the bulk entry and kept by the form.
 // `key` is a client-side identity (purchaseItemId or `new-<uuid>`) — the
@@ -231,7 +231,7 @@ export function BulkLineEntry({
   );
 
   const labelByValue = useMemo(
-    () => new Map(items.map((i) => [i.value, i.label])),
+    () => new Map<string, string>(items.map((i) => [i.value, i.label])),
     [items]
   );
 
@@ -248,7 +248,8 @@ export function BulkLineEntry({
           <Label>{t().purchases.product}</Label>
           <Combobox
             items={items}
-            itemToStringLabel={(v) => (v == null ? "" : labelByValue.get(v) ?? v)}
+            filter={null}
+            itemToStringLabel={comboboxLabel(labelByValue)}
             value={product?._id ?? null}
             disabled={editing}
             onValueChange={(value) => {

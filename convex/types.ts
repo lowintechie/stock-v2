@@ -361,6 +361,7 @@ export const saleDoc = v.object({
   // stay in sync with the schema — a field missing here fails the returns
   // validator and rolls the whole mutation back.
   chargeDeliveryOnCancel: v.optional(v.boolean()),
+  cancelShippingFee: v.optional(v.number()),
   editedVersion: v.optional(v.number()),
 });
 

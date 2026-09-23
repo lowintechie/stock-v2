@@ -10,6 +10,51 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 // ---------------------------------------------------------------------------
+// Combobox helper — extracts a display label from the value Base UI passes
+// to itemToStringLabel.  Base UI may pass a plain string (the item value)
+// OR the full option object depending on internal state.  This helper
+// normalises both cases and looks up the label from a Map, so consumers
+// never show raw IDs to the user.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build an itemToStringLabel callback for a Combobox whose items are
+ * `{ value: string; label: string }[]`.
+ *
+ * @param labelByValue – Map from value → label (built from the items array)
+ * @param fallback – string returned when no label is found (default: "").
+ *   Pass `(v) => v` to show the raw value as fallback (for creatable combox).
+ */
+export function comboboxLabel(
+  labelByValue: Map<string, string>,
+  fallback: string | ((value: string) => string) = "",
+) {
+  const fb = typeof fallback === "function" ? fallback : () => fallback;
+  return (v: unknown): string => {
+    if (v == null) return "";
+    // Base UI sometimes passes the full option object.
+    if (typeof v === "object" && v !== null) {
+      if (
+        "label" in v &&
+        typeof (v as { label: unknown }).label === "string"
+      ) {
+        return (v as { label: string }).label;
+      }
+      if (
+        "value" in v &&
+        typeof (v as { value: unknown }).value === "string"
+      ) {
+        const val = (v as { value: string }).value;
+        return labelByValue.get(val) ?? fb(val);
+      }
+    }
+    // Plain string value — the normal case.
+    const str = String(v);
+    return labelByValue.get(str) ?? fb(str);
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Ids
 // ---------------------------------------------------------------------------
 

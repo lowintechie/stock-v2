@@ -1091,6 +1091,10 @@ export const labels = {
       keepShippingFee: "Customer still pays shipping",
       keepShippingFeeHint:
         "Tick this when the package already went out and the customer refused it — the shipping fee stays owed on the cancelled order.",
+      collectShippingFee: "Collect shipping fee",
+      collectShippingFeeHint:
+        "The customer pays the shipping fee when cancelling. A payment is created automatically.",
+      shippingFeeAmount: "Shipping fee amount",
       refundHint: "Money given back to the customer is recorded here as a refund.",
       paymentAdded: "Payment received.",
       paymentDateUpdated: "Payment date updated.",
@@ -2368,6 +2372,10 @@ export const labels = {
       keepShippingFee: "អតិថិជននៅតែបង់ថ្លៃដឹកជញ្ជូន",
       keepShippingFeeHint:
         "ធីកនៅពេលកញ្ចប់ត្រូវបានដឹកទៅរួចហើយ តែអតិថិជនមិនយកទំនិញ — ថ្លៃដឹកជញ្ជូននៅតែជំពាក់លើការបញ្ជាទិញដែលបានបោះបង់។",
+      collectShippingFee: "ប្រមូលថ្លៃដឹកជញ្ជូន",
+      collectShippingFeeHint:
+        "អតិថិជនបង់ថ្លៃដឹកជញ្ជូននៅពេលបោះបង់។ ការទូទាត់ត្រូវបានបង្កើតដោយស្វ័យប្រវត្តិ។",
+      shippingFeeAmount: "ចំនួនថ្លៃដឹកជញ្ជូន",
       refundHint:
         "ប្រាក់ដែលបង្វិលទៅអតិថិជនវិញ កត់ត្រានៅទីនេះ។",
       paymentAdded: "បានទទួលប្រាក់។",

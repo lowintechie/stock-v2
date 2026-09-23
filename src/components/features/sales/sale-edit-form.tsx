@@ -63,6 +63,7 @@ import { useIdempotentSubmit } from "@/hooks/use-idempotent-submit";
 import { useShop } from "@/hooks/use-shop";
 import {
   centsToInput,
+  comboboxLabel,
   formatDateTime,
   formatMoney,
   getLang,
@@ -153,10 +154,12 @@ function CustomerField({ seedLabel }: { seedLabel: string }) {
       error={fieldState.error?.message}
     >
       <Combobox
+        key={`${field.value ?? "none"}-${seedLabel || "empty"}`}
         items={items}
-        itemToStringLabel={(v) =>
-          v == null ? "" : labelByValue.get(String(v)) ?? String(v)
-        }
+        filter={null}
+        itemToStringLabel={comboboxLabel(labelByValue, (v) =>
+          field.value === v && seedLabel ? seedLabel : "",
+        )}
         value={(field.value as string | undefined) ?? null}
         onValueChange={(value) => field.onChange(value ?? "")}
         // Only user typing drives the server search — Base UI's programmatic
@@ -175,12 +178,9 @@ function CustomerField({ seedLabel }: { seedLabel: string }) {
         <ComboboxContent>
           <ComboboxEmpty>{t().sales.noCustomers}</ComboboxEmpty>
           <ComboboxList>
-            {(customers ?? []).map((c) => (
-              <ComboboxItem key={c._id} value={c._id}>
-                <span className="truncate">{c.name}</span>
-                {c.phone ? (
-                  <span className="text-xs text-muted-foreground">· {c.phone}</span>
-                ) : null}
+            {items.map((item) => (
+              <ComboboxItem key={item.value} value={item.value}>
+                <span className="truncate">{item.label}</span>
               </ComboboxItem>
             ))}
           </ComboboxList>

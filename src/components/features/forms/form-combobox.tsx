@@ -12,7 +12,7 @@ import {
   ComboboxList,
 } from "@/components/ui/combobox";
 import { InputGroup } from "@/components/ui/input-group";
-import { t } from "@/lib/utils";
+import { t, comboboxLabel } from "@/lib/utils";
 import { FormField } from "./form-field";
 
 // RHF-controlled searchable dropdown for long lists: typing filters the
@@ -80,7 +80,8 @@ export function FormCombobox({
     >
       <Combobox
         items={filtered}
-        itemToStringLabel={(v) => (v == null ? "" : labelByValue.get(v) ?? v)}
+        filter={null}
+        itemToStringLabel={comboboxLabel(labelByValue, creatable ? (v) => v : "")}
         value={(field.value as string | undefined) ?? null}
         onValueChange={(value) => {
           field.onChange(value ?? "");

@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { api } from "@convex/_generated/api";
-import type { Doc } from "@convex/_generated/dataModel";
+import type { Doc, Id } from "@convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import {
   Combobox,
@@ -17,6 +17,7 @@ import {
   ComboboxItem,
   ComboboxList,
 } from "@/components/ui/combobox";
+import { InputGroup, InputGroupInput } from "@/components/ui/input-group";
 import {
   Dialog,
   DialogContent,
@@ -29,7 +30,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useCurrentUser } from "@/hooks/use-current-user";
-import { t, toastError } from "@/lib/utils";
+import { t, toastError, comboboxLabel } from "@/lib/utils";
 
 // T10 — POS customer step (AGENTS.md, checkout step ②). The combobox search
 // is SERVER-side (api.customers.listActive, name/phone prefix, debounced).
@@ -38,9 +39,11 @@ import { t, toastError } from "@/lib/utils";
 
 export function PosCustomerStep({
   customerId,
+  customer: customerProp,
   onSelect,
 }: {
   customerId: string | null;
+  customer?: Doc<"customers"> | null;
   onSelect: (customer: Doc<"customers">) => void;
 }) {
   const user = useCurrentUser();
@@ -58,19 +61,74 @@ export function PosCustomerStep({
     user == null ? "skip" : { search: debouncedQuery.trim() || undefined }
   );
 
-  const items = useMemo(
-    () =>
-      (customers ?? []).map((c) => ({
-        value: c._id,
-        label: `${c.name}${c.phone ? ` · ${c.phone}` : ""}`,
-      })),
-    [customers]
+  const queriedCustomer = useQuery(
+    api.customers.get,
+    user == null || !customerId
+      ? "skip"
+      : { customerId: customerId as Id<"customers"> }
+  );
+  const currentCustomer = customerProp ?? queriedCustomer;
+
+  // Cache of known customer docs and labels so we never lose
+  // the label or doc when search terms change or customers paginate.
+  const [labelCache, setLabelCache] = useState<Map<string, string>>(
+    () => new Map()
+  );
+  const [docCache, setDocCache] = useState<Map<string, Doc<"customers">>>(
+    () => new Map()
   );
 
-  const labelByValue = useMemo(
-    () => new Map<string, string>(items.map((i) => [i.value, i.label])),
-    [items]
-  );
+  useEffect(() => {
+    let changed = false;
+    const nextLabels = new Map(labelCache);
+    const nextDocs = new Map(docCache);
+
+    if (currentCustomer) {
+      const label = `${currentCustomer.name}${currentCustomer.phone ? ` · ${currentCustomer.phone}` : ""}`;
+      if (nextLabels.get(currentCustomer._id) !== label) {
+        nextLabels.set(currentCustomer._id, label);
+        nextDocs.set(currentCustomer._id, currentCustomer);
+        changed = true;
+      }
+    }
+    for (const c of customers ?? []) {
+      const label = `${c.name}${c.phone ? ` · ${c.phone}` : ""}`;
+      if (nextLabels.get(c._id) !== label) {
+        nextLabels.set(c._id, label);
+        nextDocs.set(c._id, c);
+        changed = true;
+      }
+    }
+    if (changed) {
+      setLabelCache(nextLabels);
+      setDocCache(nextDocs);
+    }
+  }, [currentCustomer, customers, labelCache, docCache]);
+
+  const items = useMemo(() => {
+    const list: { value: string; label: string }[] = (customers ?? []).map(
+      (c) => ({
+        value: c._id,
+        label: `${c.name}${c.phone ? ` · ${c.phone}` : ""}`,
+      })
+    );
+    // When no search query is active and a customer is selected, ensure they appear
+    // in the dropdown list even if outside the top 100.
+    if (
+      !debouncedQuery.trim() &&
+      customerId &&
+      !list.some((i) => i.value === customerId)
+    ) {
+      const cachedLabel = labelCache.get(customerId);
+      if (cachedLabel) {
+        list.unshift({ value: customerId, label: cachedLabel });
+      }
+    }
+    return list;
+  }, [customers, debouncedQuery, customerId, labelCache]);
+
+  const isInitialLoading =
+    customerId != null && !labelCache.has(customerId) && currentCustomer === undefined;
 
   // --- New-customer dialog ---
   const [newOpen, setNewOpen] = useState(false);
@@ -107,44 +165,55 @@ export function PosCustomerStep({
     <>
       <div className="flex w-full items-center gap-2">
         <div className="min-w-0 flex-1">
-          <Combobox
-            items={items}
-            itemToStringLabel={(v) =>
-              v == null ? "" : labelByValue.get(String(v)) ?? String(v)
-            }
-            value={customerId}
-            onValueChange={(value) => {
-              const found = (customers ?? []).find((c) => c._id === value);
-              if (found) onSelect(found);
-            }}
-            // Only user typing drives the server search — Base UI's programmatic
-            // fills (selection sync) arrive with a different reason.
-            onInputValueChange={(inputValue, eventDetails) => {
-              if (eventDetails?.reason === "input-change") setQuery(inputValue);
-            }}
-          >
-            <ComboboxInput
-              placeholder={t().sales.searchCustomers}
-              showClear
-              // Select the current value on focus so typing replaces it.
-              onFocus={(e) => (e.target as HTMLInputElement).select()}
-            />
-            <ComboboxContent>
-              <ComboboxEmpty>{t().sales.noCustomers}</ComboboxEmpty>
-              <ComboboxList>
-                {(customers ?? []).map((c) => (
-                  <ComboboxItem key={c._id} value={c._id}>
-                    <span className="truncate">{c.name}</span>
-                    {c.phone ? (
-                      <span className="text-xs text-muted-foreground">
-                        · {c.phone}
-                      </span>
-                    ) : null}
-                  </ComboboxItem>
-                ))}
-              </ComboboxList>
-            </ComboboxContent>
-          </Combobox>
+          {isInitialLoading ? (
+            <InputGroup className="w-full opacity-60">
+              <InputGroupInput disabled placeholder={t().sales.searchCustomers} />
+            </InputGroup>
+          ) : (
+            <Combobox
+              items={items}
+              filter={null}
+              itemToStringLabel={comboboxLabel(labelCache)}
+              value={customerId}
+              onValueChange={(value) => {
+                if (!value) return;
+                const found = docCache.get(value);
+                if (found) onSelect(found);
+                setQuery("");
+                setDebouncedQuery("");
+              }}
+              // Only user typing drives the server search — Base UI's programmatic
+              // fills (selection sync) arrive with a different reason.
+              onInputValueChange={(inputValue, eventDetails) => {
+                if (eventDetails?.reason === "input-change") setQuery(inputValue);
+              }}
+            >
+              <ComboboxInput
+                placeholder={t().sales.searchCustomers}
+                showClear
+                // Select the current value on focus so typing replaces it.
+                onFocus={(e) => (e.target as HTMLInputElement).select()}
+              />
+              <ComboboxContent>
+                <ComboboxEmpty>{t().sales.noCustomers}</ComboboxEmpty>
+                <ComboboxList>
+                  {items.map((item) => {
+                    const c = docCache.get(item.value);
+                    return (
+                      <ComboboxItem key={item.value} value={item.value}>
+                        <span className="truncate">{c ? c.name : item.label}</span>
+                        {c?.phone ? (
+                          <span className="text-xs text-muted-foreground">
+                            · {c.phone}
+                          </span>
+                        ) : null}
+                      </ComboboxItem>
+                    );
+                  })}
+                </ComboboxList>
+              </ComboboxContent>
+            </Combobox>
+          )}
         </div>
         {/* Always INLINE beside the selector — icon-only on phone (44px
             tap target), icon + text from sm up. */}
