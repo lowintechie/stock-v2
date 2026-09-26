@@ -5,6 +5,7 @@ import {
   CheckmarkCircle02Icon,
   MoneyReceive01Icon,
   MoneySend01Icon,
+  PencilEdit01Icon,
   Wallet02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -44,6 +45,7 @@ import {
   t,
   toastError,
 } from "@/lib/utils";
+import { inputToMs, msToInput } from "@/components/features/forms/form-date";
 import {
   paymentsNewestFirst,
   summarizePayments,
@@ -79,6 +81,7 @@ export function PaymentHistory({
   const labels = t().sales;
   const receive = useMutation(api.payments.receive);
   const refund = useMutation(api.payments.refund);
+  const updatePayment = useMutation(api.payments.update);
   const receiveSubmit = useIdempotentSubmit({
     operation: "payments.receive",
     resource: saleId,
@@ -97,6 +100,10 @@ export function PaymentHistory({
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [confirmRefund, setConfirmRefund] = useState(false);
+
+  // Edit payment date state
+  const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
+  const [editDate, setEditDate] = useState("");
 
   const amountCents = inputToCents(amount) ?? 0;
   const refundCents = inputToCents(refundAmount) ?? 0;
@@ -138,6 +145,22 @@ export function PaymentHistory({
     } finally {
       busyRef.current = false;
       setBusy(false);
+    }
+  }
+
+  async function doEditDate() {
+    if (!editingPaymentId) return;
+    const ms = inputToMs(editDate);
+    if (ms == null) return;
+    try {
+      await updatePayment({
+        paymentId: editingPaymentId as Id<"payments">,
+        receivedAt: ms,
+      });
+      toast.success(labels.paymentDateUpdated);
+      setEditingPaymentId(null);
+    } catch (err) {
+      toastError(err);
     }
   }
 
@@ -457,7 +480,50 @@ export function PaymentHistory({
                 </div>
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   <Badge variant="secondary">{labels.methods[p.method]}</Badge>
-                  <span>{formatDateTime(p.receivedAt, timezone, getLang())}</span>
+                  {editingPaymentId === p._id ? (
+                    <div className="flex items-center gap-1">
+                      <Input
+                        type="date"
+                        value={editDate}
+                        max={msToInput(Date.now())}
+                        onChange={(e) => setEditDate(e.target.value)}
+                        className="h-7 w-auto text-xs"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="xs"
+                        onClick={() => void doEditDate()}
+                      >
+                        {t().common.save}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => setEditingPaymentId(null)}
+                      >
+                        {t().common.cancel}
+                      </Button>
+                    </div>
+                  ) : (
+                    <>
+                      <span>{formatDateTime(p.receivedAt, timezone, getLang())}</span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        className="size-5"
+                        onClick={() => {
+                          setEditingPaymentId(p._id);
+                          setEditDate(msToInput(p.receivedAt));
+                        }}
+                        aria-label={labels.editPaymentDate}
+                      >
+                        <HugeiconsIcon icon={PencilEdit01Icon} strokeWidth={2} className="size-3" />
+                      </Button>
+                    </>
+                  )}
                   {userName ? (
                     <span>
                       {t().sales.by} {userName}

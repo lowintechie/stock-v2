@@ -267,6 +267,11 @@ export default defineSchema({
     // every order cancelled before the flag existed — those owe nothing, so
     // history never changes.
     chargeDeliveryOnCancel: v.optional(v.boolean()),
+    // The actual shipping fee amount collected on cancellation. When set, this
+    // overrides sale.deliveryFee for the cancelled order's total. Allows
+    // charging a shipping fee even on free-shipping orders (e.g., customer
+    // cancels after dispatch → charge $2 shipping).
+    cancelShippingFee: v.optional(v.number()),
     // Bumped by every saveEdit — the stale-edit guard (a save whose version
     // no longer matches is rejected, so concurrent edits never overwrite).
     editedVersion: v.optional(v.number()),

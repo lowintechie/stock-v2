@@ -39,7 +39,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useCurrentUser } from "@/hooks/use-current-user";
-import { cn, formatMoney, imageUrl, inputToCents, t } from "@/lib/utils";
+import { cn, formatMoney, imageUrl, inputToCents, t, comboboxLabel } from "@/lib/utils";
 
 // The editable items table for the full-page order editor. Everything here is
 // LOCAL state — no quantity moves in stock until the page is saved, which is
@@ -404,6 +404,20 @@ export function SaleEditItemsTable({
     [results]
   );
 
+  const pickerItems = useMemo(
+    () =>
+      (results ?? []).map((r) => ({
+        value: r.variantId as string,
+        label: `${r.productName} — ${r.label}`,
+      })),
+    [results]
+  );
+
+  const pickerLabelByValue = useMemo(
+    () => new Map(pickerItems.map((i) => [i.value, i.label])),
+    [pickerItems]
+  );
+
   function patchLine(key: string, patch: Partial<EditLine>) {
     onChange(lines.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   }
@@ -519,16 +533,9 @@ export function SaleEditItemsTable({
         <Label htmlFor="sale-edit-add-item">{labels.addItem}</Label>
         <Combobox
           key={pickerKey}
-          items={(results ?? []).map((r) => r.variantId as string)}
-          itemToStringLabel={(item) => {
-            if (item == null) return "";
-            const value =
-              typeof item === "object" && "value" in item
-                ? String((item as { value: unknown }).value)
-                : String(item);
-            const found = resultById.get(value);
-            return found ? `${found.productName} — ${found.label}` : "";
-          }}
+          items={pickerItems}
+          filter={null}
+          itemToStringLabel={comboboxLabel(pickerLabelByValue)}
           value={null}
           onValueChange={(value) => {
             if (typeof value === "string" && value) {

@@ -584,11 +584,42 @@ export default function SettingsPage() {
   const user = useCurrentUser();
   const shop = useQuery(api.shop.get);
   const save = useMutation(api.shop.save);
-  // Default-customer combobox options: active customers only (capped at
-  // 100 server-side). The walk-in record is hidden — the sentinel option
-  // below already stands for it.
   const customers =
     useQuery(api.customers.listActive, user == null ? "skip" : {}) ?? [];
+  const defaultCustomer = useQuery(
+    api.customers.get,
+    user == null || shop?.defaultCustomerId == null
+      ? "skip"
+      : { customerId: shop.defaultCustomerId }
+  );
+
+  const defaultCustomerOptions = useMemo(() => {
+    const list = [
+      {
+        value: DEFAULT_CUSTOMER_NONE,
+        label: t().sales.walkInCustomer,
+      },
+      ...customers
+        .filter((c) => !c.isWalkIn)
+        .map((c) => ({
+          value: c._id,
+          label: `${c.name}${c.phone ? ` · ${c.phone}` : ""}`,
+        })),
+    ];
+    // Keep the shop's currently configured default customer visible in the
+    // dropdown even if they fall beyond the 100-item query limit.
+    if (
+      defaultCustomer &&
+      !defaultCustomer.isWalkIn &&
+      !list.some((o) => o.value === defaultCustomer._id)
+    ) {
+      list.push({
+        value: defaultCustomer._id,
+        label: `${defaultCustomer.name}${defaultCustomer.phone ? ` · ${defaultCustomer.phone}` : ""}`,
+      });
+    }
+    return list;
+  }, [customers, defaultCustomer]);
   const ensureDefaults = useMutation(api.shop.ensureDefaults);
   const { data: session } = authClient.useSession();
   const convex = useConvex();
@@ -913,18 +944,7 @@ export default function SettingsPage() {
                 name="defaultCustomerId"
                 label={t().settings.defaultCustomer}
                 hint={t().settings.defaultCustomerHint}
-                options={[
-                  {
-                    value: DEFAULT_CUSTOMER_NONE,
-                    label: t().sales.walkInCustomer,
-                  },
-                  ...customers
-                    .filter((c) => !c.isWalkIn)
-                    .map((c) => ({
-                      value: c._id,
-                      label: `${c.name}${c.phone ? ` · ${c.phone}` : ""}`,
-                    })),
-                ]}
+                options={defaultCustomerOptions}
                 className="sm:col-span-2"
               />
             </CardContent>

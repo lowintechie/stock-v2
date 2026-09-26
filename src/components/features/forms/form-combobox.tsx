@@ -12,7 +12,7 @@ import {
   ComboboxList,
 } from "@/components/ui/combobox";
 import { InputGroup } from "@/components/ui/input-group";
-import { t } from "@/lib/utils";
+import { t, comboboxLabel } from "@/lib/utils";
 import { FormField } from "./form-field";
 
 // RHF-controlled searchable dropdown for long lists: typing filters the
@@ -60,18 +60,13 @@ export function FormCombobox({
       option.label.toLowerCase().includes(lower)
     );
     if (creatable && !matches.some((option) => option.label.toLowerCase() === lower)) {
-      // The raw string is the value; itemToStringLabel falls back to it, so
-      // the input shows the typed text after selection (it's not in the map).
       matches.push({ value: q, label: t().common.useTyped.replace("{value}", q) });
     }
     return matches;
   }, [options, query, creatable]);
 
-  // Value → label lookup for Base UI's itemToStringLabel: the input shows
-  // labels, not raw ids, after a selection (and on mount with a prefilled
-  // value). Misses fall back to the value itself.
   const labelByValue = useMemo(
-    () => new Map(options.map((option) => [option.value, option.label])),
+    () => new Map(options.map((o) => [o.value, o.label])),
     [options]
   );
 
@@ -84,15 +79,9 @@ export function FormCombobox({
       className={className}
     >
       <Combobox
-        items={filtered.map((option) => option.value)}
-        itemToStringLabel={(item) => {
-          if (item == null) return "";
-          const value =
-            typeof item === "object" && "value" in item
-              ? String((item as { value: unknown }).value)
-              : String(item);
-          return labelByValue.get(value) ?? value;
-        }}
+        items={filtered}
+        filter={null}
+        itemToStringLabel={comboboxLabel(labelByValue, creatable ? (v) => v : "")}
         value={(field.value as string | undefined) ?? null}
         onValueChange={(value) => {
           field.onChange(value ?? "");

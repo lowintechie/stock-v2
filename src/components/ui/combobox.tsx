@@ -14,7 +14,16 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react"
 import { ArrowDown01Icon, Cancel01Icon, Tick02Icon } from "@hugeicons/core-free-icons"
 
-const Combobox = ComboboxPrimitive.Root
+const ComboboxPrimitiveRoot = ComboboxPrimitive.Root
+
+// Generic wrapper so Value is inferred from the consumer's usage.
+// Without this, Value defaults to unknown and itemToStringLabel receives
+// unknown — forcing every consumer to write defensive type checks.
+function Combobox<Value = string>({
+  ...props
+}: ComboboxPrimitive.Root.Props<Value>) {
+  return <ComboboxPrimitiveRoot {...props} />
+}
 
 function ComboboxValue({ ...props }: ComboboxPrimitive.Value.Props) {
   return <ComboboxPrimitive.Value data-slot="combobox-value" {...props} />

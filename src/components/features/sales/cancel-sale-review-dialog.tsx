@@ -100,8 +100,10 @@ export function CancelSaleReviewDialog({
   const [refundInput, setRefundInput] = useState("");
   const [reason, setReason] = useState("");
   const [keepShipping, setKeepShipping] = useState(false);
+  const [shippingFeeInput, setShippingFeeInput] = useState("");
 
   const refundCents = inputToCents(refundInput) ?? 0;
+  const shippingFeeCents = inputToCents(shippingFeeInput) ?? 0;
 
   if (detail === undefined) {
     return (
@@ -162,7 +164,7 @@ export function CancelSaleReviewDialog({
         ...(resolutions.length > 0 ? { resolutions } : {}),
         ...(refundCents > 0 ? { refund: { amount: refundCents } } : {}),
         ...(reason.trim() ? { reason: reason.trim() } : {}),
-        ...(sale.deliveryFee > 0 && keepShipping ? { chargeDeliveryFee: true } : {}),
+        ...(keepShipping && shippingFeeCents > 0 ? { shippingFeeAmount: shippingFeeCents } : {}),
       });
       toast.success(t().sales.cancelled);
       onClose();
@@ -317,22 +319,40 @@ export function CancelSaleReviewDialog({
             />
           </div>
 
-          {sale.deliveryFee > 0 ? (
+          <div className="grid gap-2">
             <label className="flex items-start gap-2 text-sm">
               <input
                 type="checkbox"
                 checked={keepShipping}
-                onChange={(e) => setKeepShipping(e.target.checked)}
+                onChange={(e) => {
+                  setKeepShipping(e.target.checked);
+                  if (e.target.checked && !shippingFeeInput && sale.deliveryFee > 0) {
+                    setShippingFeeInput(centsToInput(sale.deliveryFee));
+                  }
+                }}
                 className="mt-0.5"
               />
               <span>
-                {t().sales.keepShippingFee}
+                {t().sales.collectShippingFee}
                 <span className="block text-xs text-muted-foreground">
-                  {t().sales.keepShippingFeeHint}
+                  {t().sales.collectShippingFeeHint}
                 </span>
               </span>
             </label>
-          ) : null}
+            {keepShipping ? (
+              <div className="grid gap-1.5 pl-6">
+                <Label htmlFor="cancel-shipping-fee">{t().sales.shippingFeeAmount}</Label>
+                <Input
+                  id="cancel-shipping-fee"
+                  value={shippingFeeInput}
+                  onChange={(e) => setShippingFeeInput(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  className="h-11 text-right tabular-nums"
+                />
+              </div>
+            ) : null}
+          </div>
         </div>
 
         <DialogFooter className="gap-2">

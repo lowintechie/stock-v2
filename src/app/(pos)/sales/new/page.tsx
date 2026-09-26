@@ -17,7 +17,7 @@ import { toast } from "sonner";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { api } from "@convex/_generated/api";
-import type { Id } from "@convex/_generated/dataModel";
+import type { Doc, Id } from "@convex/_generated/dataModel";
 import {
   InvoiceDialog,
   type SaleDetail,
@@ -120,6 +120,7 @@ export default function NewSalePage() {
   // The customer is stored as an id and derived from api.customers.get, so
   // edits (e.g. the add-address dialog) refresh the doc automatically.
   const [customerId, setCustomerId] = useState<Id<"customers"> | null>(null);
+  const [selectedCustomer, setSelectedCustomer] = useState<Doc<"customers"> | null>(null);
   const customer = useQuery(
     api.customers.get,
     customerId == null ? "skip" : { customerId }
@@ -138,18 +139,20 @@ export default function NewSalePage() {
       : { customerId: shop.defaultCustomerId }
   );
   const autoSelectedRef = useRef<Id<"customers"> | null>(null);
+  const target =
+    defaultCustomer && defaultCustomer.active
+      ? defaultCustomer
+      : (walkIn ?? null);
+
   useEffect(() => {
     if (user == null) return;
-    const target =
-      defaultCustomer && defaultCustomer.active
-        ? defaultCustomer
-        : (walkIn ?? null);
     if (!target) return;
     if (customerId === null || customerId === autoSelectedRef.current) {
       autoSelectedRef.current = target._id;
       setCustomerId(target._id);
+      setSelectedCustomer(target);
     }
-  }, [user, customerId, defaultCustomer, walkIn]);
+  }, [user, customerId, target]);
 
   const [channelId, setChannelId] = useState<string | null>(null);
   const [companyId, setCompanyId] = useState<string | null>(null);
@@ -251,6 +254,7 @@ export default function NewSalePage() {
     clear();
     setShowCart(false);
     setCustomerId(null);
+    setSelectedCustomer(null);
     setChannelId(null);
     setCompanyId(null);
     setDiscount("");
@@ -331,6 +335,7 @@ export default function NewSalePage() {
       clear();
       setShowCart(false);
       setCustomerId(null);
+      setSelectedCustomer(null);
       setChannelId(null);
       setCompanyId(null);
       setDiscount("");
@@ -516,7 +521,11 @@ export default function NewSalePage() {
         <div className="flex min-w-48 flex-1">
           <PosCustomerStep
             customerId={customerId}
-            onSelect={(c) => setCustomerId(c._id)}
+            customer={customer ?? selectedCustomer ?? target}
+            onSelect={(c) => {
+              setSelectedCustomer(c);
+              setCustomerId(c._id);
+            }}
           />
         </div>
         <div

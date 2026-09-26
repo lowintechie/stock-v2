@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { centsToInput, imageUrl, inputToCents, t } from "@/lib/utils";
+import { centsToInput, imageUrl, inputToCents, t, comboboxLabel } from "@/lib/utils";
 
 // One purchase line as built by the bulk entry and kept by the form.
 // `key` is a client-side identity (purchaseItemId or `new-<uuid>`) — the
@@ -104,8 +104,13 @@ export function BulkLineEntry({
     if (editLine && !page.some((p) => p._id === editLine.product._id)) {
       return [editLine.product, ...page];
     }
+    // Keep the currently selected product in the list so its label is
+    // available for itemToStringLabel even after a search change.
+    if (product && !page.some((p) => p._id === product._id)) {
+      return [product, ...page];
+    }
     return page;
-  }, [products, editLine]);
+  }, [products, editLine, product]);
 
   // All variant rows of the picked product. Rebuild the grid whenever the
   // product or its variants land; `lines` / `editLine` are mount-time values
@@ -220,12 +225,14 @@ export function BulkLineEntry({
 
   const canSubmit = product != null && !invalid && drafts.length > 0;
 
-  // Product _id → name lookup for Base UI's itemToStringLabel: the closed
-  // input shows the picked product's name, never its raw id (misses fall
-  // back to the id).
-  const labelByValue = useMemo(
-    () => new Map<string, string>(options.map((p) => [String(p._id), p.name])),
+  const items = useMemo(
+    () => options.map((p) => ({ value: p._id, label: p.name })),
     [options]
+  );
+
+  const labelByValue = useMemo(
+    () => new Map<string, string>(items.map((i) => [i.value, i.label])),
+    [items]
   );
 
   return (
@@ -240,15 +247,9 @@ export function BulkLineEntry({
         <div className="grid gap-2">
           <Label>{t().purchases.product}</Label>
           <Combobox
-            items={options.map((p) => p._id)}
-            itemToStringLabel={(item) => {
-              if (item == null) return "";
-              const value =
-                typeof item === "object" && "value" in item
-                  ? String((item as { value: unknown }).value)
-                  : String(item);
-              return labelByValue.get(value) ?? value;
-            }}
+            items={items}
+            filter={null}
+            itemToStringLabel={comboboxLabel(labelByValue)}
             value={product?._id ?? null}
             disabled={editing}
             onValueChange={(value) => {

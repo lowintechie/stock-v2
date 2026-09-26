@@ -74,35 +74,30 @@ export const searchProducts = query({
     const terms = [...new Set([term, raw, hyphenForm, spaceForm])].filter(Boolean);
     const categoryId = args.categoryId;
     if (!args.size) {
-      // Query the primary (normalized) term via the index.
-      const primaryQuery = categoryId
-        ? ctx.db.query("products").withIndex("by_category_nameLower", (q) =>
-            term
-              ? q
-                  .eq("categoryId", categoryId)
-                  .gte("nameLower", term)
-                  .lt("nameLower", `${term}￿`)
-              : q.eq("categoryId", categoryId)
-          )
-        : ctx.db.query("products").withIndex("by_nameLower", (q) =>
-            term ? q.gte("nameLower", term).lt("nameLower", `${term}￿`) : q
-          );
-      const page = await primaryQuery.order("asc").paginate(args.paginationOpts);
-      let allActive = page.page.filter((p) => p.active);
+      // Collect all matching products, filter active, paginate by offset.
+      // Same pattern as the size-filtered path below. Convex caches the
+      // query result — re-executes only when products change, so page
+      // turns without data changes hit the cache. The index range is
+      // bounded by the search/category prefix; POS catalogs are small.
+      const buildQuery = (t: string) =>
+        categoryId
+          ? ctx.db.query("products").withIndex("by_category_nameLower", (q) =>
+              t
+                ? q
+                    .eq("categoryId", categoryId)
+                    .gte("nameLower", t)
+                    .lt("nameLower", `${t}￿`)
+                : q.eq("categoryId", categoryId)
+            )
+          : ctx.db.query("products").withIndex("by_nameLower", (q) =>
+              t ? q.gte("nameLower", t).lt("nameLower", `${t}￿`) : q
+            );
+      const allRows = await buildQuery(term).order("asc").collect();
+      let allActive = allRows.filter((p) => p.active);
       // If normalized differs from raw, also query the original form to
       // catch products stored with hyphens in nameLower.
       if (terms.length > 1) {
-        const extra = await (categoryId
-          ? ctx.db.query("products").withIndex("by_category_nameLower", (q) =>
-              q
-                .eq("categoryId", categoryId)
-                .gte("nameLower", raw)
-                .lt("nameLower", `${raw}￿`)
-            )
-          : ctx.db.query("products").withIndex("by_nameLower", (q) =>
-              q.gte("nameLower", raw).lt("nameLower", `${raw}￿`)
-            )
-        ).take(100);
+        const extra = await buildQuery(raw).take(100);
         const seen = new Set(allActive.map((p) => p._id));
         for (const p of extra) {
           if (p.active && !seen.has(p._id)) {
@@ -114,11 +109,13 @@ export const searchProducts = query({
           (a, b) => a.nameLower.localeCompare(b.nameLower) || (a._id < b._id ? -1 : 1)
         );
       }
-      return {
-        page: allActive.slice(0, args.paginationOpts.numItems),
-        continueCursor: "",
-        total: allActive.length,
-      };
+      const offset = Number(args.paginationOpts.cursor) || 0;
+      const page = allActive.slice(offset, offset + args.paginationOpts.numItems);
+      const continueCursor =
+        offset + page.length < allActive.length
+          ? String(offset + page.length)
+          : "";
+      return { page, continueCursor, total: allActive.length };
     }
     // Size-filtered path: find products with at least one ACTIVE variant of
     // this size via the by_size_active index (bounded take — never a full

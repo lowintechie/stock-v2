@@ -63,6 +63,7 @@ import { useIdempotentSubmit } from "@/hooks/use-idempotent-submit";
 import { useShop } from "@/hooks/use-shop";
 import {
   centsToInput,
+  comboboxLabel,
   formatDateTime,
   formatMoney,
   getLang,
@@ -128,15 +129,21 @@ function CustomerField({ seedLabel }: { seedLabel: string }) {
     user == null ? "skip" : { search: debouncedQuery.trim() || undefined }
   );
 
-  const labelById = useMemo(
-    () =>
-      new Map<string, string>(
-        (customers ?? []).map((c) => [
-          c._id,
-          `${c.name}${c.phone ? ` · ${c.phone}` : ""}`,
-        ])
-      ),
-    [customers]
+  const items = useMemo(() => {
+    const list = (customers ?? []).map((c) => ({
+      value: c._id,
+      label: `${c.name}${c.phone ? ` · ${c.phone}` : ""}`,
+    }));
+    // Ensure the current customer is in the items even if deactivated.
+    if (field.value && !list.some((i) => i.value === field.value)) {
+      list.unshift({ value: field.value as Id<"customers">, label: seedLabel });
+    }
+    return list;
+  }, [customers, field.value, seedLabel]);
+
+  const labelByValue = useMemo(
+    () => new Map<string, string>(items.map((i) => [i.value, i.label])),
+    [items]
   );
 
   return (
@@ -147,16 +154,12 @@ function CustomerField({ seedLabel }: { seedLabel: string }) {
       error={fieldState.error?.message}
     >
       <Combobox
-        items={(customers ?? []).map((c) => c._id)}
-        itemToStringLabel={(item) => {
-          if (item == null) return "";
-          const value =
-            typeof item === "object" && "value" in item
-              ? String((item as { value: unknown }).value)
-              : String(item);
-          if (value === field.value) return labelById.get(value) ?? seedLabel;
-          return labelById.get(value) ?? value;
-        }}
+        key={`${field.value ?? "none"}-${seedLabel || "empty"}`}
+        items={items}
+        filter={null}
+        itemToStringLabel={comboboxLabel(labelByValue, (v) =>
+          field.value === v && seedLabel ? seedLabel : "",
+        )}
         value={(field.value as string | undefined) ?? null}
         onValueChange={(value) => field.onChange(value ?? "")}
         // Only user typing drives the server search — Base UI's programmatic
@@ -175,12 +178,9 @@ function CustomerField({ seedLabel }: { seedLabel: string }) {
         <ComboboxContent>
           <ComboboxEmpty>{t().sales.noCustomers}</ComboboxEmpty>
           <ComboboxList>
-            {(customers ?? []).map((c) => (
-              <ComboboxItem key={c._id} value={c._id}>
-                <span className="truncate">{c.name}</span>
-                {c.phone ? (
-                  <span className="text-xs text-muted-foreground">· {c.phone}</span>
-                ) : null}
+            {items.map((item) => (
+              <ComboboxItem key={item.value} value={item.value}>
+                <span className="truncate">{item.label}</span>
               </ComboboxItem>
             ))}
           </ComboboxList>
