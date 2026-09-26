@@ -110,6 +110,8 @@ export const adjustStock = mutation({
       idempotency.hash,
       { kind: "stockLedger", id: rowId },
     );
+    // Update cached avgCost since stock changed
+    await updateAvgCost(ctx, [args.variantId]);
     return (await ctx.db.get(rowId))!;
   },
 });
@@ -181,6 +183,12 @@ export const batchAdjust = mutation({
       });
     }
 
+    // Update cached avgCost for all affected variants
+    await updateAvgCost(
+      ctx,
+      args.rows.map((r) => r.variantId),
+    );
+
     return args.rows.length;
   },
 });
@@ -240,6 +248,13 @@ export const recordStocktake = mutation({
         note: `Counted ${counted}, system had ${before}`,
       });
       changes.push({ variantId: row.variantId, before, after: counted });
+    }
+    // Update cached avgCost for all variants whose stock changed
+    if (changes.length > 0) {
+      await updateAvgCost(
+        ctx,
+        changes.map((c) => c.variantId),
+      );
     }
     return { written: changes.length, rows: changes };
   },
