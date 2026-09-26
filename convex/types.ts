@@ -19,10 +19,13 @@ export const channelType = v.union(
   v.literal("instagram"),
   v.literal("tiktok"),
   v.literal("walk_in"),
-  v.literal("custom")
+  v.literal("custom"),
 );
 
-export const purchaseStatus = v.union(v.literal("draft"), v.literal("received"));
+export const purchaseStatus = v.union(
+  v.literal("draft"),
+  v.literal("received"),
+);
 
 export const saleStatus = v.union(
   v.literal("draft"),
@@ -35,7 +38,7 @@ export const saleStatus = v.union(
   v.literal("delivering"),
   v.literal("delivered"),
   v.literal("partially_delivered"),
-  v.literal("cancelled")
+  v.literal("cancelled"),
 );
 
 export const ledgerReason = v.union(
@@ -46,20 +49,20 @@ export const ledgerReason = v.union(
   v.literal("exchange_in"),
   v.literal("cancel"),
   v.literal("adjustment"),
-  v.literal("stocktake")
+  v.literal("stocktake"),
 );
 
 export const paymentMethod = v.union(
   v.literal("cash"),
   v.literal("bank_transfer"),
   v.literal("other"),
-  v.literal("refund")
+  v.literal("refund"),
 );
 
 export const printerType = v.union(
   v.literal("webusb"),
   v.literal("qz_tray"),
-  v.literal("network")
+  v.literal("network"),
 );
 
 // --- Document DTOs (used as `returns:` validators) ---
@@ -87,7 +90,7 @@ export const shopDoc = v.object({
       qzCert: v.optional(v.string()),
       networkHost: v.optional(v.string()),
       networkPort: v.optional(v.number()),
-    })
+    }),
   ),
   defaultCustomerId: v.optional(v.id("customers")),
 });
@@ -145,6 +148,7 @@ export const productVariantDoc = v.object({
   color: v.optional(v.string()),
   price: v.optional(v.number()),
   cost: v.optional(v.number()),
+  avgCost: v.optional(v.number()),
   sku: v.optional(v.string()),
   active: v.boolean(),
 });
@@ -198,7 +202,7 @@ export const setDetail = v.object({
     v.object({
       item: setItemDoc,
       product: productDoc,
-    })
+    }),
   ),
   setTotal: v.number(),
 });
@@ -247,7 +251,7 @@ export const purchaseDetail = v.object({
       item: purchaseItemDoc,
       variant: productVariantDoc,
       product: productDoc,
-    })
+    }),
   ),
 });
 
@@ -352,8 +356,8 @@ export const saleDoc = v.object({
       v.literal("delivered"),
       v.literal("partial"),
       v.literal("returned"),
-      v.literal("cancelled")
-    )
+      v.literal("cancelled"),
+    ),
   ),
   outcomeMarkedAt: v.optional(v.number()),
   imageStorageId: v.optional(v.id("_storage")),
@@ -430,7 +434,9 @@ export const plReport = v.object({
   expenses: v.number(),
   profit: v.number(),
   paymentsCount: v.number(),
-  expensesByCategory: v.array(v.object({ category: v.string(), amount: v.number() })),
+  expensesByCategory: v.array(
+    v.object({ category: v.string(), amount: v.number() }),
+  ),
 });
 
 export const saleEventDoc = v.object({
@@ -493,9 +499,7 @@ export const saleDetail = v.object({
   items: v.array(saleItemDetail),
   payments: v.array(paymentDoc),
   // Audit trail (rule #8), newest first, joined with the actor's name.
-  events: v.array(
-    v.object({ event: saleEventDoc, userName: v.string() })
-  ),
+  events: v.array(v.object({ event: saleEventDoc, userName: v.string() })),
   total: v.number(),
   paid: v.number(),
   remaining: v.number(),
@@ -521,7 +525,7 @@ export const saleDetail = v.object({
  * rejected anywhere else. */
 export const newItemFulfillment = v.union(
   v.literal("handed_now"),
-  v.literal("deliver_later")
+  v.literal("deliver_later"),
 );
 
 export const saleEditItemInput = v.object({
@@ -542,7 +546,7 @@ export const resolutionOutcome = v.union(
   v.literal("returned_sellable"), // goods came back, back on the shelf
   v.literal("returned_damaged"), // goods came back, cannot be sold
   v.literal("still_with_customer"), // nothing happened — line stays billed
-  v.literal("delivery_incorrect") // never handed over; owner-only correction
+  v.literal("delivery_incorrect"), // never handed over; owner-only correction
 );
 
 /** One resolution: how many pieces of a line took a given outcome.
@@ -582,7 +586,11 @@ export const saleEditLine = v.object({
   // What happened to the pieces that came back — derived from the ledger,
   // so the items table can say "Returned · Sellable" / "Returned · Damaged"
   // instead of a generic "Removed". null = this line has no return history.
-  returnedOutcome: v.union(v.literal("sellable"), v.literal("damaged"), v.null()),
+  returnedOutcome: v.union(
+    v.literal("sellable"),
+    v.literal("damaged"),
+    v.null(),
+  ),
 });
 
 /** Everything the edit page loads in one read. `version` is the order's edit
@@ -630,7 +638,7 @@ export const dashboardRange = v.union(
   v.literal("7d"),
   v.literal("30d"),
   v.literal("mtd"),
-  v.literal("ytd")
+  v.literal("ytd"),
 );
 
 /** The five KPI cards. All money is integer cents; `sales`/`purchases`/
@@ -669,7 +677,7 @@ export const dashboardOverview = v.object({
       label: v.string(), // "Product — M · Black"
       qty: v.number(), // billed pieces (ordered − cancelled − returned)
       revenue: v.number(), // Σ unitPrice × billed − item discounts, cents
-    })
+    }),
   ), // top 5 by qty desc
   otherQty: v.number(), // billed pieces of everything below the top 5
   topCustomers: v.array(
@@ -677,7 +685,7 @@ export const dashboardOverview = v.object({
       customerId: v.id("customers"),
       name: v.string(),
       revenue: v.number(), // Σ payment amounts in range, cents (refunds net out)
-    })
+    }),
   ), // top 5 by revenue desc
   stockValue: v.object({
     totalValue: v.number(), // Σ max(qty, 0) × weighted-average cost, cents
@@ -711,7 +719,7 @@ export const countStockRow = v.object({
       color: v.optional(v.string()),
       sku: v.optional(v.string()),
       qty: v.number(),
-    })
+    }),
   ),
   totalQty: v.number(),
 });
@@ -846,7 +854,7 @@ export const deadStockThreshold = v.union(
   v.literal(30),
   v.literal(60),
   v.literal(90),
-  v.literal(180)
+  v.literal(180),
 );
 
 export const deadStockRow = v.object({
@@ -948,7 +956,7 @@ export const stocktakeResult = v.object({
       variantId: v.id("productVariants"),
       before: v.number(),
       after: v.number(),
-    })
+    }),
   ),
 });
 
@@ -956,7 +964,7 @@ export const stocktakeResult = v.object({
 export const checkoutPaymentMethod = v.union(
   v.literal("cash"),
   v.literal("bank_transfer"),
-  v.literal("other")
+  v.literal("other"),
 );
 
 /** One checkout line: ids + qty + discount only — prices/costs are re-derived
@@ -987,7 +995,7 @@ export const deliveryOutcome = v.union(
   v.literal("delivered"),
   v.literal("partial"),
   v.literal("returned"),
-  v.literal("cancelled")
+  v.literal("cancelled"),
 );
 
 /** One order on the evening screen: everything the owner needs to mark the

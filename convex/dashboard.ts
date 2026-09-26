@@ -95,7 +95,9 @@ export const getOverview = query({
     // day.
     const chartFrom = args.range === "today" ? addDays(today, -6) : kpi.from;
     const monthBuckets = args.range === "ytd";
-    const bucketKeys = monthBuckets ? monthKeys(kpi.from, today) : dayKeys(chartFrom, kpi.to);
+    const bucketKeys = monthBuckets
+      ? monthKeys(kpi.from, today)
+      : dayKeys(chartFrom, kpi.to);
     const buckets = new Map<string, { sales: number; purchases: number }>();
     for (const key of bucketKeys) buckets.set(key, { sales: 0, purchases: 0 });
 
@@ -103,12 +105,16 @@ export const getOverview = query({
     // money back nets out per bucket automatically) — by_receivedDay index.
     const payments = await ctx.db
       .query("payments")
-      .withIndex("by_receivedDay", (q) => q.gte("receivedDay", chartFrom).lt("receivedDay", kpi.to))
+      .withIndex("by_receivedDay", (q) =>
+        q.gte("receivedDay", chartFrom).lt("receivedDay", kpi.to),
+      )
       .collect();
 
     let kpiSales = 0;
     for (const payment of payments) {
-      const key = monthBuckets ? payment.receivedDay.slice(0, 7) : payment.receivedDay;
+      const key = monthBuckets
+        ? payment.receivedDay.slice(0, 7)
+        : payment.receivedDay;
       const bucket = buckets.get(key);
       if (bucket) bucket.sales += payment.amount;
       if (payment.receivedDay >= kpi.from) kpiSales += payment.amount; // < kpi.to by the collect
@@ -124,7 +130,7 @@ export const getOverview = query({
       await ctx.db
         .query("purchases")
         .withIndex("by_receivedAt", (q) =>
-          q.gte("receivedAt", chartEpoch.from).lt("receivedAt", chartEpoch.to)
+          q.gte("receivedAt", chartEpoch.from).lt("receivedAt", chartEpoch.to),
         )
         .collect()
     ).filter((p) => p.status === "received");
@@ -139,7 +145,7 @@ export const getOverview = query({
         let value = 0;
         for (const item of items) value += item.qty * item.unitCost;
         purchaseValues.set(purchase._id, value);
-      })
+      }),
     );
 
     let kpiPurchases = 0;
@@ -165,19 +171,24 @@ export const getOverview = query({
     const rangeSales = (
       await ctx.db
         .query("sales")
-        .withIndex("by_createdAt", (q) => q.gte("createdAt", kpiEpoch.from).lt("createdAt", kpiEpoch.to))
+        .withIndex("by_createdAt", (q) =>
+          q.gte("createdAt", kpiEpoch.from).lt("createdAt", kpiEpoch.to),
+        )
         .collect()
     )
       .filter((s) => s.status !== "draft")
       .sort((a, b) => b.createdAt - a.createdAt);
     const invoices = rangeSales.length;
     const recentSales = await Promise.all(
-      rangeSales.slice(0, 5).map((sale) => toListRow(ctx, sale))
+      rangeSales.slice(0, 5).map((sale) => toListRow(ctx, sale)),
     );
 
     // Top products: billed pieces (ordered − cancelled − returned) per
     // variant across the range's orders, ranked by qty.
-    const productTotals = new Map<Id<"productVariants">, { qty: number; revenue: number }>();
+    const productTotals = new Map<
+      Id<"productVariants">,
+      { qty: number; revenue: number }
+    >();
     await Promise.all(
       rangeSales.map(async (sale) => {
         const items = await ctx.db
@@ -187,15 +198,19 @@ export const getOverview = query({
         for (const item of items) {
           const billed = item.qtyOrdered - item.qtyCancelled - item.qtyReturned;
           if (billed <= 0) continue;
-          const prev = productTotals.get(item.variantId) ?? { qty: 0, revenue: 0 };
+          const prev = productTotals.get(item.variantId) ?? {
+            qty: 0,
+            revenue: 0,
+          };
           productTotals.set(item.variantId, {
             qty: prev.qty + billed,
             // Per-line revenue mirrors orderCosts: the discount is once per
             // line, not per piece.
-            revenue: prev.revenue + item.unitPrice * billed - (item.discount ?? 0),
+            revenue:
+              prev.revenue + item.unitPrice * billed - (item.discount ?? 0),
           });
         }
-      })
+      }),
     );
 
     const ranked = [...productTotals.entries()]
@@ -203,11 +218,13 @@ export const getOverview = query({
       .sort((a, b) => b.qty - a.qty);
     const totalQty = ranked.reduce((sum, r) => sum + r.qty, 0);
     const topFive = ranked.slice(0, 5);
-    const variantDocs = await Promise.all(topFive.map((r) => ctx.db.get(r.variantId)));
+    const variantDocs = await Promise.all(
+      topFive.map((r) => ctx.db.get(r.variantId)),
+    );
     const productDocs = await Promise.all(
-      [...new Set(variantDocs.filter(Boolean).map((vd) => vd!.productId))].map((id) =>
-        ctx.db.get(id)
-      )
+      [...new Set(variantDocs.filter(Boolean).map((vd) => vd!.productId))].map(
+        (id) => ctx.db.get(id),
+      ),
     );
     const productById = new Map<Id<"products">, Doc<"products">>();
     for (const doc of productDocs) if (doc) productById.set(doc._id, doc);
@@ -227,7 +244,9 @@ export const getOverview = query({
     const kpiPayments = payments.filter((p) => p.receivedDay >= kpi.from);
     const saleIdSet = [...new Set(kpiPayments.map((p) => p.saleId))];
     const salesById = new Map<Id<"sales">, Doc<"sales">>();
-    for (const sale of await Promise.all(saleIdSet.map((id) => ctx.db.get(id)))) {
+    for (const sale of await Promise.all(
+      saleIdSet.map((id) => ctx.db.get(id)),
+    )) {
       if (sale) salesById.set(sale._id, sale);
     }
     const customerTotals = new Map<Id<"customers">, number>();
@@ -236,22 +255,28 @@ export const getOverview = query({
       if (!sale) continue;
       customerTotals.set(
         sale.customerId,
-        (customerTotals.get(sale.customerId) ?? 0) + payment.amount
+        (customerTotals.get(sale.customerId) ?? 0) + payment.amount,
       );
     }
     const topCustomerIds = [...customerTotals.entries()]
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5);
-    const customerDocs = await Promise.all(topCustomerIds.map(([id]) => ctx.db.get(id)));
+    const customerDocs = await Promise.all(
+      topCustomerIds.map(([id]) => ctx.db.get(id)),
+    );
     const topCustomers = topCustomerIds.map(([customerId, revenue], i) => ({
       customerId,
       revenue,
       name: customerDocs[i]?.name ?? "—",
     }));
 
-    // Stock value: the same bounded product walk as collectLowStock — active
-    // products → active variants → ledger sum × weighted-average cost.
-    const products = await ctx.db.query("products").withIndex("by_nameLower", (q) => q).take(1000);
+    // Stock value: active products → active variants → ledger sum × cached
+    // average cost (avgCost field on variant, updated by purchases). Falls
+    // back to the reference cost when avgCost is unset.
+    const products = await ctx.db
+      .query("products")
+      .withIndex("by_nameLower", (q) => q)
+      .take(1000);
     let totalValue = 0;
     let totalUnits = 0;
     for (const product of products) {
@@ -265,7 +290,8 @@ export const getOverview = query({
         const qty = Math.max(0, await variantQty(ctx, variant._id));
         if (qty <= 0) continue;
         totalUnits += qty;
-        totalValue += qty * (await weightedAvgCost(ctx, variant._id, variant, product));
+        const cost = variant.avgCost ?? variant.cost ?? product.defaultCost;
+        totalValue += qty * cost;
       }
     }
 
@@ -277,8 +303,8 @@ export const getOverview = query({
         ctx.db
           .query("sales")
           .withIndex("by_status_createdAt", (q) => q.eq("status", status))
-          .collect()
-      )
+          .collect(),
+      ),
     );
     const merged = batches.flat();
     let salesDue = 0;

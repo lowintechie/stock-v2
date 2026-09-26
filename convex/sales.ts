@@ -54,7 +54,7 @@ const LINES_MAX = 200;
  */
 export async function assertStockCovers(
   ctx: { db: QueryCtx["db"] },
-  outflowByVariant: Map<Id<"productVariants">, number>
+  outflowByVariant: Map<Id<"productVariants">, number>,
 ): Promise<void> {
   for (const [variantId, outflow] of outflowByVariant) {
     if (outflow <= 0) continue;
@@ -75,12 +75,32 @@ export async function assertStockCovers(
  * its equal per-piece share of purchase delivery with only the stock still on
  * the shelf. Falls back to the reference cost when malformed history does not
  * provide enough purchase cost information.
+ *
+ * Uses the cached avgCost if present; otherwise calculates from ledger.
  */
 export async function weightedAvgCost(
   ctx: { db: QueryCtx["db"] },
   variantId: Id<"productVariants">,
   variant: Doc<"productVariants">,
-  product: Doc<"products">
+  product: Doc<"products">,
+): Promise<number> {
+  // Use cached value if available
+  if (variant.avgCost !== undefined) {
+    return variant.avgCost;
+  }
+  // Otherwise calculate from ledger (fallback for old data or when cache not yet set)
+  return await calculateWeightedAvgCost(ctx, variantId, variant, product);
+}
+
+/**
+ * Calculate weighted-average cost from the full ledger history.
+ * This is the expensive operation that we cache in avgCost.
+ */
+async function calculateWeightedAvgCost(
+  ctx: { db: QueryCtx["db"] },
+  variantId: Id<"productVariants">,
+  variant: Doc<"productVariants">,
+  product: Doc<"products">,
 ): Promise<number> {
   const rows = await ctx.db
     .query("stockLedger")
@@ -90,24 +110,26 @@ export async function weightedAvgCost(
     (a, b) =>
       a.ts - b.ts ||
       a._creationTime - b._creationTime ||
-      a._id.localeCompare(b._id)
+      a._id.localeCompare(b._id),
   );
   const purchaseItemIds = [
     ...new Set(
       rows
-        .filter((r) => r.reason === "purchase" && r.purchaseItemId !== undefined)
-        .map((r) => r.purchaseItemId!)
+        .filter(
+          (r) => r.reason === "purchase" && r.purchaseItemId !== undefined,
+        )
+        .map((r) => r.purchaseItemId!),
     ),
   ];
   const items = await Promise.all(purchaseItemIds.map((id) => ctx.db.get(id)));
   const itemById = new Map(
-    items.filter((item) => item !== null).map((item) => [item._id, item] as const)
+    items
+      .filter((item) => item !== null)
+      .map((item) => [item._id, item] as const),
   );
   const purchaseIds = [
     ...new Set(
-      items
-        .filter((item) => item !== null)
-        .map((item) => item.purchaseId)
+      items.filter((item) => item !== null).map((item) => item.purchaseId),
     ),
   ];
   const purchaseCosts = await Promise.all(
@@ -119,31 +141,39 @@ export async function weightedAvgCost(
           .withIndex("by_purchase", (q) => q.eq("purchaseId", purchaseId))
           .collect(),
       ]);
-      const totalPieces = purchaseItems.reduce((total, item) => total + item.qty, 0);
+      const totalPieces = purchaseItems.reduce(
+        (total, item) => total + item.qty,
+        0,
+      );
       const deliveryPerPiece =
         purchase && totalPieces > 0
           ? Math.round((purchase.deliveryCost ?? 0) / totalPieces)
           : 0;
       return [purchaseId, deliveryPerPiece] as const;
-    })
+    }),
   );
   const deliveryPerPieceByPurchase = new Map(purchaseCosts);
   const fallbackCost = variant.cost ?? product.defaultCost;
   let currentQty = 0;
   let currentAverage: number | undefined;
   for (const row of rows) {
-    if (row.reason === "purchase" && row.delta > 0 && row.purchaseItemId !== undefined) {
+    if (
+      row.reason === "purchase" &&
+      row.delta > 0 &&
+      row.purchaseItemId !== undefined
+    ) {
       const item = itemById.get(row.purchaseItemId);
       if (item?.variantId === variantId) {
         const receiptUnitCost =
-          item.unitCost + (deliveryPerPieceByPurchase.get(item.purchaseId) ?? 0);
+          item.unitCost +
+          (deliveryPerPieceByPurchase.get(item.purchaseId) ?? 0);
         if (currentQty <= 0) {
           currentAverage = receiptUnitCost;
         } else {
           const shelfCost = currentAverage ?? fallbackCost;
           currentAverage = Math.round(
             (currentQty * shelfCost + row.delta * receiptUnitCost) /
-              (currentQty + row.delta)
+              (currentQty + row.delta),
           );
         }
       }
@@ -151,6 +181,31 @@ export async function weightedAvgCost(
     currentQty += row.delta;
   }
   return currentAverage ?? fallbackCost;
+}
+
+/**
+ * Update the cached avgCost for one or more variants. Call this from purchase
+ * mutations after stock enters or when editing a purchase. This recalculates
+ * the weighted average and stores it in the variant row so reads can skip the
+ * expensive ledger walk.
+ */
+export async function updateAvgCost(
+  ctx: MutationCtx,
+  variantIds: Id<"productVariants">[],
+): Promise<void> {
+  for (const variantId of variantIds) {
+    const variant = await ctx.db.get(variantId);
+    if (!variant) continue;
+    const product = await ctx.db.get(variant.productId);
+    if (!product) continue;
+    const avgCost = await calculateWeightedAvgCost(
+      ctx,
+      variantId,
+      variant,
+      product,
+    );
+    await ctx.db.patch(variantId, { avgCost });
+  }
 }
 
 /** Next display code "20260815-001" — shop-day based. Reading the day's
@@ -206,7 +261,7 @@ export function chargedDeliveryFee(sale: Doc<"sales">): number {
  * discount applied to goods that are back on the shelf. */
 export async function computeTotal(
   ctx: { db: QueryCtx["db"] },
-  sale: Doc<"sales">
+  sale: Doc<"sales">,
 ): Promise<number> {
   if (sale.status === "cancelled") return chargedDeliveryFee(sale);
   const items = await ctx.db
@@ -224,7 +279,7 @@ export async function computeTotal(
  * happened and is being charged. Floor at 0 — never a negative debt. */
 export async function computeOwed(
   ctx: { db: QueryCtx["db"] },
-  sale: Doc<"sales">
+  sale: Doc<"sales">,
 ): Promise<number> {
   if (sale.status === "cancelled") return chargedDeliveryFee(sale);
   const items = await ctx.db
@@ -239,7 +294,7 @@ export async function computeOwed(
 /** Sum of payment rows — refunds are negative rows, so this nets money out. */
 export async function computePaid(
   ctx: { db: QueryCtx["db"] },
-  saleId: Id<"sales">
+  saleId: Id<"sales">,
 ): Promise<number> {
   const payments = await ctx.db
     .query("payments")
@@ -252,7 +307,10 @@ export async function computePaid(
 
 /** Epoch range of a YYYY-MM-DD day in the shop timezone. Noon UTC is the
  * same calendar day in every timezone (±12h), so startOfDay lands on D. */
-export function dayRange(day: string, timeZone: string): { from: number; to: number } {
+export function dayRange(
+  day: string,
+  timeZone: string,
+): { from: number; to: number } {
   const noon = new Date(`${day}T12:00:00Z`).getTime();
   const from = startOfDay(noon, timeZone);
   return { from, to: from + 86_400_000 };
@@ -266,7 +324,7 @@ export function dayRange(day: string, timeZone: string): { from: number; to: num
  */
 export async function buildDetail(
   ctx: { db: QueryCtx["db"] },
-  sale: Doc<"sales">
+  sale: Doc<"sales">,
 ) {
   const customer = (await ctx.db.get(sale.customerId))!;
   const channel = (await ctx.db.get(sale.salesChannelId))!;
@@ -282,12 +340,14 @@ export async function buildDetail(
   const variantIds = [...new Set(itemDocs.map((item) => item.variantId))];
   const variants = await Promise.all(variantIds.map((id) => ctx.db.get(id)));
   const variantById = new Map(
-    variants.filter((v) => v !== null).map((v) => [v._id, v] as const)
+    variants.filter((v) => v !== null).map((v) => [v._id, v] as const),
   );
-  const productIds = [...new Set([...variantById.values()].map((v) => v.productId))];
+  const productIds = [
+    ...new Set([...variantById.values()].map((v) => v.productId)),
+  ];
   const products = await Promise.all(productIds.map((id) => ctx.db.get(id)));
   const productById = new Map(
-    products.filter((p) => p !== null).map((p) => [p._id, p] as const)
+    products.filter((p) => p !== null).map((p) => [p._id, p] as const),
   );
 
   const items = [];
@@ -343,12 +403,14 @@ export async function buildDetail(
     (a, b) =>
       b.ts - a.ts ||
       b._creationTime - a._creationTime ||
-      b._id.localeCompare(a._id)
+      b._id.localeCompare(a._id),
   ); // newest first, including deterministic same-timestamp ties
   const eventUserIds = [...new Set(eventDocs.map((e) => e.userId))];
-  const eventUsers = await Promise.all(eventUserIds.map((id) => ctx.db.get(id)));
+  const eventUsers = await Promise.all(
+    eventUserIds.map((id) => ctx.db.get(id)),
+  );
   const eventUserById = new Map(
-    eventUsers.filter((u) => u !== null).map((u) => [u._id, u.name] as const)
+    eventUsers.filter((u) => u !== null).map((u) => [u._id, u.name] as const),
   );
   const events = eventDocs.map((event) => ({
     event,
@@ -395,7 +457,7 @@ export const checkout = mutation({
       staff._id,
       "sales.checkout",
       idempotencyKey,
-      payload
+      payload,
     );
     if (idempotency.replay !== null) {
       const sale = await ctx.db.get(replaySaleId(idempotency.replay));
@@ -433,11 +495,17 @@ export const checkout = mutation({
 
     const customer = await ctx.db.get(args.customerId);
     if (!customer) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Customer not found." });
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Customer not found.",
+      });
     }
     const channel = await ctx.db.get(args.salesChannelId);
     if (!channel) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Sales page not found." });
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Sales page not found.",
+      });
     }
 
     // Delivery off → no company, no fees (in-store pickup or own delivery).
@@ -490,7 +558,11 @@ export const checkout = mutation({
 
     // Lines: re-derive every price and cost; check stock against the ledger.
     const prepared: {
-      line: { variantId: Id<"productVariants">; qty: number; discount?: number };
+      line: {
+        variantId: Id<"productVariants">;
+        qty: number;
+        discount?: number;
+      };
       qty: number;
       variant: Doc<"productVariants">;
       product: Doc<"products">;
@@ -502,10 +574,7 @@ export const checkout = mutation({
     // Combo-set recipes are read once and cached: several lines of one set
     // share a setId, and we resolve each line's price from the recipe (never
     // from the client) — the server always owns the price.
-    const setCache = new Map<
-      Id<"sets">,
-      Map<Id<"products">, number>
-    >();
+    const setCache = new Map<Id<"sets">, Map<Id<"products">, number>>();
     let subtotal = 0;
     // The POS keeps every add as its OWN line — the same variant may appear
     // several times ("never merged"). Oversell protection must therefore be
@@ -518,7 +587,10 @@ export const checkout = mutation({
       const variant = await ctx.db.get(line.variantId);
       const product = variant ? await ctx.db.get(variant.productId) : null;
       if (!variant || !variant.active || !product || !product.active) {
-        throw new ConvexError({ code: "NOT_FOUND", message: "Item not found." });
+        throw new ConvexError({
+          code: "NOT_FOUND",
+          message: "Item not found.",
+        });
       }
 
       // Combo-set line: the price comes from the set RECIPE (this product's
@@ -532,7 +604,10 @@ export const checkout = mutation({
         if (priceByProduct === undefined) {
           const set = await ctx.db.get(line.setId);
           if (!set || !set.active) {
-            throw new ConvexError({ code: "NOT_FOUND", message: "Set not found." });
+            throw new ConvexError({
+              code: "NOT_FOUND",
+              message: "Set not found.",
+            });
           }
           const items = await ctx.db
             .query("setItems")
@@ -554,10 +629,20 @@ export const checkout = mutation({
         price = assertCents(variant.price ?? product.defaultPrice, "price");
       }
 
-      qtyByVariant.set(line.variantId, (qtyByVariant.get(line.variantId) ?? 0) + qty);
-      const unitCostSnapshot = await weightedAvgCost(ctx, line.variantId, variant, product);
+      qtyByVariant.set(
+        line.variantId,
+        (qtyByVariant.get(line.variantId) ?? 0) + qty,
+      );
+      const unitCostSnapshot = await weightedAvgCost(
+        ctx,
+        line.variantId,
+        variant,
+        product,
+      );
       const itemDiscount =
-        line.discount === undefined ? 0 : assertCents(line.discount, "item discount");
+        line.discount === undefined
+          ? 0
+          : assertCents(line.discount, "item discount");
       if (itemDiscount < 0 || itemDiscount > price * qty) {
         throw new ConvexError({
           code: "INVALID_MONEY",
@@ -689,7 +774,7 @@ export const checkout = mutation({
       "sales.checkout",
       idempotencyKey,
       idempotency.hash,
-      { kind: "sale", id: saleId }
+      { kind: "sale", id: saleId },
     );
     const sale = (await ctx.db.get(saleId))!;
     return await buildDetail(ctx, sale);
@@ -749,12 +834,18 @@ export const getEditData = query({
     const variantIds = [...new Set(itemDocs.map((item) => item.variantId))];
     const variants = await Promise.all(variantIds.map((id) => ctx.db.get(id)));
     const variantById = new Map(
-      variants.filter((variant) => variant !== null).map((variant) => [variant._id, variant] as const)
+      variants
+        .filter((variant) => variant !== null)
+        .map((variant) => [variant._id, variant] as const),
     );
-    const productIds = [...new Set([...variantById.values()].map((variant) => variant.productId))];
+    const productIds = [
+      ...new Set([...variantById.values()].map((variant) => variant.productId)),
+    ];
     const products = await Promise.all(productIds.map((id) => ctx.db.get(id)));
     const productById = new Map(
-      products.filter((product) => product !== null).map((product) => [product._id, product] as const)
+      products
+        .filter((product) => product !== null)
+        .map((product) => [product._id, product] as const),
     );
     // One indexed ledger read per distinct variant — the same read the stock
     // sum uses — also classifies this order's returned lines: a sellable
@@ -817,7 +908,8 @@ export const getEditData = query({
         qtyReturned:
           item.qtyReturned + splits.reduce((s, x) => s + x.qtyReturned, 0),
       };
-      const billedQty = merged.qtyOrdered - merged.qtyCancelled - merged.qtyReturned;
+      const billedQty =
+        merged.qtyOrdered - merged.qtyCancelled - merged.qtyReturned;
       const stock = stockByVariant.get(item.variantId) ?? 0;
       const splitOutcome =
         splits.length > 0
@@ -869,8 +961,13 @@ function remainingOf(_sale: Doc<"sales">, total: number, paid: number): number {
 /** One sale's money line — total / paid / remaining, all integer cents. */
 async function moneyRow(
   ctx: { db: QueryCtx["db"] },
-  sale: Doc<"sales">
-): Promise<{ sale: Doc<"sales">; total: number; paid: number; remaining: number }> {
+  sale: Doc<"sales">,
+): Promise<{
+  sale: Doc<"sales">;
+  total: number;
+  paid: number;
+  remaining: number;
+}> {
   const total = await computeTotal(ctx, sale);
   const paid = await computePaid(ctx, sale._id);
   return { sale, total, paid, remaining: remainingOf(sale, total, paid) };
@@ -879,7 +976,7 @@ async function moneyRow(
 /** Join one sale into a list row: names + computed money (integer cents). */
 export async function toListRow(
   ctx: { db: QueryCtx["db"] },
-  sale: Doc<"sales">
+  sale: Doc<"sales">,
 ) {
   const customer = await ctx.db.get(sale.customerId);
   const channel = await ctx.db.get(sale.salesChannelId);
@@ -949,9 +1046,10 @@ function saleCodeMatches(code: string, term: string): boolean {
  * nothing was paid, partly_paid in between. Cancelled and draft rows are
  * excluded before this runs (see filteredRows) — cancelled would otherwise
  * compute to "paid" via the forced-0 remaining. */
-function paymentStateOf(
-  row: { paid: number; remaining: number }
-): "paid" | "partly_paid" | "unpaid" {
+function paymentStateOf(row: {
+  paid: number;
+  remaining: number;
+}): "paid" | "partly_paid" | "unpaid" {
   if (row.remaining <= 0) return "paid";
   if (row.paid === 0) return "unpaid";
   return "partly_paid";
@@ -970,7 +1068,7 @@ function paymentStateOf(
  */
 async function filteredRows(
   ctx: { db: QueryCtx["db"] },
-  args: SaleListFilters
+  args: SaleListFilters,
 ): Promise<Awaited<ReturnType<typeof toListRow>>[]> {
   const term = args.search?.trim().toLowerCase() ?? "";
   const shop = await getShop(ctx);
@@ -981,28 +1079,30 @@ async function filteredRows(
   const fromMs =
     args.fromDay !== undefined
       ? dayRange(args.fromDay, shop.timezone).from
-      : selectedDay?.from ?? null;
+      : (selectedDay?.from ?? null);
   const toMs =
     args.toDay !== undefined
       ? dayRange(args.toDay, shop.timezone).to
-      : selectedDay?.to ?? null;
+      : (selectedDay?.to ?? null);
   const batches = await Promise.all(
     ALL_SALE_STATUSES.map((status) =>
       ctx.db
         .query("sales")
         .withIndex("by_status_createdAt", (q) => q.eq("status", status))
         .order("desc")
-        .take(FILTER_SCAN)
-    )
+        .take(FILTER_SCAN),
+    ),
   );
   const merged = batches.flat().sort((a, b) => b.createdAt - a.createdAt);
   const rows = [];
   for (const sale of merged) {
     if (fromMs !== null && sale.createdAt < fromMs) continue;
     if (toMs !== null && sale.createdAt >= toMs) continue;
-    if (args.customerId !== undefined && sale.customerId !== args.customerId) continue;
+    if (args.customerId !== undefined && sale.customerId !== args.customerId)
+      continue;
     if (args.status !== undefined && sale.status !== args.status) continue;
-    if (args.channelId !== undefined && sale.salesChannelId !== args.channelId) continue;
+    if (args.channelId !== undefined && sale.salesChannelId !== args.channelId)
+      continue;
     if (!saleCodeMatches(sale.code, term)) continue;
     // Drafts are unfinished orders and cancelled rows show no payment badge
     // ("—") — neither belongs in a paid/unpaid view.
@@ -1044,7 +1144,7 @@ export const list = query({
     fromDay: v.optional(v.string()), // YYYY-MM-DD, start of that shop-tz day
     toDay: v.optional(v.string()), // YYYY-MM-DD, end of that shop-tz day
     paymentStatus: v.optional(
-      v.union(v.literal("paid"), v.literal("partly_paid"), v.literal("unpaid"))
+      v.union(v.literal("paid"), v.literal("partly_paid"), v.literal("unpaid")),
     ),
   },
   returns: v.object({
@@ -1074,7 +1174,9 @@ export const list = query({
       return {
         page,
         continueCursor:
-          offset + page.length < rows.length ? String(offset + page.length) : "",
+          offset + page.length < rows.length
+            ? String(offset + page.length)
+            : "",
         total: rows.length,
       };
     }
@@ -1089,7 +1191,7 @@ export const list = query({
         return ctx.db
           .query("sales")
           .withIndex("by_code", (q) =>
-            q.gte("code", term).lt("code", `${term}￿`)
+            q.gte("code", term).lt("code", `${term}￿`),
           );
       }
       if (args.status !== undefined) {
@@ -1114,8 +1216,14 @@ export const list = query({
     };
     const page = await build().order("desc").paginate(args.paginationOpts);
     const total = (await build().take(1000)).length;
-    const rows = await Promise.all(page.page.map((sale) => toListRow(ctx, sale)));
-    return { page: rows, continueCursor: page.isDone ? "" : page.continueCursor, total };
+    const rows = await Promise.all(
+      page.page.map((sale) => toListRow(ctx, sale)),
+    );
+    return {
+      page: rows,
+      continueCursor: page.isDone ? "" : page.continueCursor,
+      total,
+    };
   },
 });
 
@@ -1150,8 +1258,8 @@ export const listUnpaid = query({
           .query("sales")
           .withIndex("by_status_createdAt", (q) => q.eq("status", status))
           .order("desc")
-          .take(SCAN)
-      )
+          .take(SCAN),
+      ),
     );
     const merged = batches.flat().sort((a, b) => b.createdAt - a.createdAt);
     const rows = [];
@@ -1166,7 +1274,8 @@ export const listUnpaid = query({
     const page = rows.slice(offset, offset + args.paginationOpts.numItems);
     return {
       page,
-      continueCursor: offset + page.length < rows.length ? String(offset + page.length) : "",
+      continueCursor:
+        offset + page.length < rows.length ? String(offset + page.length) : "",
       total: rows.length,
     };
   },
@@ -1188,7 +1297,7 @@ export const summary = query({
     fromDay: v.optional(v.string()), // YYYY-MM-DD, start of that shop-tz day
     toDay: v.optional(v.string()), // YYYY-MM-DD, end of that shop-tz day
     paymentStatus: v.optional(
-      v.union(v.literal("paid"), v.literal("partly_paid"), v.literal("unpaid"))
+      v.union(v.literal("paid"), v.literal("partly_paid"), v.literal("unpaid")),
     ),
   },
   returns: v.object({
@@ -1246,7 +1355,7 @@ export const summary = query({
  * ceiling is the practical cap on how large the set can be. */
 async function fullMatchedSales(
   ctx: { db: QueryCtx["db"] },
-  args: SaleListFilters
+  args: SaleListFilters,
 ): Promise<Doc<"sales">[]> {
   const term = args.search?.trim().toLowerCase() ?? "";
   let range: { from: number; to: number } | null = null;
@@ -1258,7 +1367,9 @@ async function fullMatchedSales(
     if (term) {
       return ctx.db
         .query("sales")
-        .withIndex("by_code", (q) => q.gte("code", term).lt("code", `${term}￿`));
+        .withIndex("by_code", (q) =>
+          q.gte("code", term).lt("code", `${term}￿`),
+        );
     }
     if (args.status !== undefined) {
       return ctx.db.query("sales").withIndex("by_status_createdAt", (q) => {
@@ -1275,7 +1386,9 @@ async function fullMatchedSales(
         .withIndex("by_channel", (q) => q.eq("salesChannelId", channelId));
     }
     return ctx.db.query("sales").withIndex("by_createdAt", (q) => {
-      return range ? q.gte("createdAt", range.from).lte("createdAt", range.to) : q;
+      return range
+        ? q.gte("createdAt", range.from).lte("createdAt", range.to)
+        : q;
     });
   };
   return await build().order("desc").collect();
@@ -1289,19 +1402,30 @@ async function fullMatchedSales(
  * bust it gets paginated lists instead of cards). */
 async function batchMoney(
   ctx: { db: QueryCtx["db"] },
-  sales: Doc<"sales">[]
-): Promise<Map<Id<"sales">, { total: number; paid: number; remaining: number }>> {
+  sales: Doc<"sales">[],
+): Promise<
+  Map<Id<"sales">, { total: number; paid: number; remaining: number }>
+> {
   const items = await ctx.db.query("saleItems").collect();
   const payments = await ctx.db.query("payments").collect();
   const itemTotals = new Map<Id<"sales">, number>();
   for (const item of items) {
-    itemTotals.set(item.saleId, (itemTotals.get(item.saleId) ?? 0) + lineValue(item));
+    itemTotals.set(
+      item.saleId,
+      (itemTotals.get(item.saleId) ?? 0) + lineValue(item),
+    );
   }
   const paidBySale = new Map<Id<"sales">, number>();
   for (const payment of payments) {
-    paidBySale.set(payment.saleId, (paidBySale.get(payment.saleId) ?? 0) + payment.amount);
+    paidBySale.set(
+      payment.saleId,
+      (paidBySale.get(payment.saleId) ?? 0) + payment.amount,
+    );
   }
-  const out = new Map<Id<"sales">, { total: number; paid: number; remaining: number }>();
+  const out = new Map<
+    Id<"sales">,
+    { total: number; paid: number; remaining: number }
+  >();
   for (const sale of sales) {
     // Same rule as computeTotal: a cancelled order bills only the charged
     // shipping fee, so the summary cards and the rows can never disagree.
@@ -1310,7 +1434,11 @@ async function batchMoney(
         ? chargedDeliveryFee(sale)
         : (itemTotals.get(sale._id) ?? 0) - sale.discount + sale.deliveryFee;
     const paid = paidBySale.get(sale._id) ?? 0;
-    out.set(sale._id, { total, paid, remaining: remainingOf(sale, total, paid) });
+    out.set(sale._id, {
+      total,
+      paid,
+      remaining: remainingOf(sale, total, paid),
+    });
   }
   return out;
 }
@@ -1337,7 +1465,9 @@ export const listOwedByCustomer = query({
     const SCAN = 200;
     const sales = await ctx.db
       .query("sales")
-      .withIndex("by_customer_createdAt", (q) => q.eq("customerId", args.customerId))
+      .withIndex("by_customer_createdAt", (q) =>
+        q.eq("customerId", args.customerId),
+      )
       .order("desc")
       .take(SCAN);
     const rows = [];
@@ -1354,7 +1484,8 @@ export const listOwedByCustomer = query({
     const page = rows.slice(offset, offset + args.paginationOpts.numItems);
     return {
       page,
-      continueCursor: offset + page.length < rows.length ? String(offset + page.length) : "",
+      continueCursor:
+        offset + page.length < rows.length ? String(offset + page.length) : "",
       total: rows.length,
       totalOwed,
     };
@@ -1385,8 +1516,22 @@ const ALLOWED_TRANSITIONS: Record<string, string[]> = {
   // Pending is a post-confirm regression ("wait before processing"): stock
   // is already out from checkout, so no movement is written here. From
   // pending ANY later stage is reachable, including back to confirmed.
-  pending: ["confirmed", "packed", "delivering", "delivered", "partially_delivered", "cancelled"],
-  confirmed: ["pending", "packed", "delivering", "delivered", "partially_delivered", "cancelled"],
+  pending: [
+    "confirmed",
+    "packed",
+    "delivering",
+    "delivered",
+    "partially_delivered",
+    "cancelled",
+  ],
+  confirmed: [
+    "pending",
+    "packed",
+    "delivering",
+    "delivered",
+    "partially_delivered",
+    "cancelled",
+  ],
   packed: ["delivering", "delivered", "partially_delivered", "cancelled"],
   delivering: ["delivered", "partially_delivered", "cancelled"],
   delivered: ["partially_delivered", "cancelled"],
@@ -1414,7 +1559,7 @@ async function transitionSaleStatus(
   staff: Doc<"users">,
   target: Doc<"sales">["status"],
   opts: { deliveryFee: number; chargeDeliveryFee?: boolean; note?: string },
-  now: number
+  now: number,
 ): Promise<void> {
   const allowed = ALLOWED_TRANSITIONS[sale.status] ?? [];
   if (!allowed.includes(target)) {
@@ -1444,7 +1589,9 @@ async function transitionSaleStatus(
   // order — anything else is a client mistake, so it's ignored rather than
   // silently written onto the row.
   const chargeTrip =
-    opts.chargeDeliveryFee === true && target === "cancelled" && opts.deliveryFee > 0;
+    opts.chargeDeliveryFee === true &&
+    target === "cancelled" &&
+    opts.deliveryFee > 0;
   if (target === "delivered") {
     // "Delivered" means the customer took everything: fill every line's
     // delivered qty. Pieces previously cancelled came back to the shelf,
@@ -1530,7 +1677,7 @@ export const setStatus = mutation({
         args.refund.amount,
         args.refund.note,
         shop.timezone,
-        now
+        now,
       );
       now += 1;
     }
@@ -1544,7 +1691,7 @@ export const setStatus = mutation({
         chargeDeliveryFee: args.chargeDeliveryFee,
         note: args.note ?? args.reason,
       },
-      now
+      now,
     );
     return await buildDetail(ctx, (await ctx.db.get(sale._id))!);
   },
@@ -1590,10 +1737,17 @@ export const batchSetStatus = mutation({
         skipped++;
         continue;
       }
-      await transitionSaleStatus(ctx, sale, staff, args.status, {
-        deliveryFee: sale.deliveryFee,
-        note: args.note,
-      }, now);
+      await transitionSaleStatus(
+        ctx,
+        sale,
+        staff,
+        args.status,
+        {
+          deliveryFee: sale.deliveryFee,
+          note: args.note,
+        },
+        now,
+      );
       now += 1; // unique ts per event
       updated++;
     }
@@ -1604,7 +1758,12 @@ export const batchSetStatus = mutation({
 
 /** One order-level field that changed, resolved before the patch so the
  * audit event can show the true before → after. */
-type OrderFieldChange = { field: string; label: string; from: string; to: string };
+type OrderFieldChange = {
+  field: string;
+  label: string;
+  from: string;
+  to: string;
+};
 
 /** The order-level fields an edit may set. undefined = keep, null = clear. */
 type OrderFieldArgs = {
@@ -1637,7 +1796,7 @@ async function planOrderFields(
   sale: Doc<"sales">,
   shop: Doc<"shop">,
   args: OrderFieldArgs,
-  opts: { subtotal: number; alwaysCheckDiscount: boolean }
+  opts: { subtotal: number; alwaysCheckDiscount: boolean },
 ): Promise<{
   patch: Partial<Doc<"sales">>;
   changes: OrderFieldChange[];
@@ -1648,18 +1807,26 @@ async function planOrderFields(
   if (args.customerId !== undefined) {
     const customer = await ctx.db.get(args.customerId);
     if (!customer) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Customer not found." });
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Customer not found.",
+      });
     }
   }
   if (args.salesChannelId !== undefined) {
     const channel = await ctx.db.get(args.salesChannelId);
     if (!channel) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Sales page not found." });
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Sales page not found.",
+      });
     }
   }
   const companySet =
     args.deliveryCompanyId !== undefined && args.deliveryCompanyId !== null;
-  const companyDoc = companySet ? await ctx.db.get(args.deliveryCompanyId!) : null;
+  const companyDoc = companySet
+    ? await ctx.db.get(args.deliveryCompanyId!)
+    : null;
   if (companySet && !companyDoc) {
     throw new ConvexError({
       code: "NOT_FOUND",
@@ -1674,7 +1841,9 @@ async function planOrderFields(
   // cleared. A fee on a fee-less order while the module is off is still a
   // client mistake.
   const orderHasDelivery =
-    sale.deliveryFee > 0 || sale.deliveryCost > 0 || sale.deliveryCompanyId != null;
+    sale.deliveryFee > 0 ||
+    sale.deliveryCost > 0 ||
+    sale.deliveryCompanyId != null;
   if (
     !shop.deliveryEnabled &&
     !orderHasDelivery &&
@@ -1746,19 +1915,23 @@ async function planOrderFields(
   let deliveryCost: number;
   if (args.deliveryCost === null) deliveryCost = 0;
   else if (args.deliveryCost !== undefined) deliveryCost = args.deliveryCost;
-  else if (args.deliveryCompanyId === undefined) deliveryCost = sale.deliveryCost;
+  else if (args.deliveryCompanyId === undefined)
+    deliveryCost = sale.deliveryCost;
   else if (args.deliveryCompanyId === null) deliveryCost = 0;
   else deliveryCost = companyDoc!.defaultFee;
   let note = sale.note;
   if (args.note !== undefined) {
     note =
-      args.note === null ? undefined : args.note.trim().slice(0, 500) || undefined;
+      args.note === null
+        ? undefined
+        : args.note.trim().slice(0, 500) || undefined;
   }
 
   // Collect the actual changes (old/new values resolved BEFORE the patch so
   // the audit events show the true before/after).
   const patch: Partial<Doc<"sales">> = {};
-  const changes: { field: string; label: string; from: string; to: string }[] = [];
+  const changes: { field: string; label: string; from: string; to: string }[] =
+    [];
   if (args.customerId !== undefined && args.customerId !== sale.customerId) {
     const oldDoc = await ctx.db.get(sale.customerId);
     const newDoc = await ctx.db.get(args.customerId);
@@ -1789,7 +1962,9 @@ async function planOrderFields(
     const oldCompany = sale.deliveryCompanyId
       ? await ctx.db.get(sale.deliveryCompanyId)
       : null;
-    const newCompany = deliveryCompanyId ? await ctx.db.get(deliveryCompanyId) : null;
+    const newCompany = deliveryCompanyId
+      ? await ctx.db.get(deliveryCompanyId)
+      : null;
     changes.push({
       field: "deliveryCompany",
       label: "Delivery company",
@@ -1870,7 +2045,7 @@ async function logOrderFieldChanges(
   sale: Doc<"sales">,
   staff: Doc<"users">,
   changes: OrderFieldChange[],
-  now: number
+  now: number,
 ): Promise<void> {
   for (const change of changes) {
     await ctx.db.insert("saleEvents", {
@@ -1942,7 +2117,7 @@ export const saveEdit = mutation({
       staff._id,
       "sales.saveEdit",
       idempotencyKey,
-      payload
+      payload,
     );
     if (idempotency.replay !== null) {
       const replayedSale = await ctx.db.get(replaySaleId(idempotency.replay));
@@ -1952,7 +2127,8 @@ export const saveEdit = mutation({
     const shop = await getShop(ctx);
     const sale = await ctx.db.get(args.saleId);
     if (!sale) throw notFoundSale();
-    if (sale.status === "draft" || sale.status === "cancelled") throw lockedSale();
+    if (sale.status === "draft" || sale.status === "cancelled")
+      throw lockedSale();
     // Stale-edit guard: the page saves the version it loaded; a concurrent
     // save (another tab, another staff member) already bumped the counter,
     // so this one refuses instead of overwriting their work. Omitted = skip
@@ -1995,7 +2171,7 @@ export const saveEdit = mutation({
         args.refund.amount,
         args.refund.note,
         shop.timezone,
-        now
+        now,
       );
     }
     // The line diff and status events sort after the refund event too.
@@ -2077,7 +2253,7 @@ export const saveEdit = mutation({
           .slice()
           .sort(
             (a, b) =>
-              a._creationTime - b._creationTime || a._id.localeCompare(b._id)
+              a._creationTime - b._creationTime || a._id.localeCompare(b._id),
           );
         const delivered =
           item.qtyDelivered -
@@ -2118,7 +2294,10 @@ export const saveEdit = mutation({
           variant = await ctx.db.get(entry.variantId!);
           product = variant ? await ctx.db.get(variant.productId) : null;
           if (!variant || !variant.active || !product || !product.active) {
-            throw new ConvexError({ code: "NOT_FOUND", message: "Item not found." });
+            throw new ConvexError({
+              code: "NOT_FOUND",
+              message: "Item not found.",
+            });
           }
         }
         const billedOld =
@@ -2127,7 +2306,7 @@ export const saveEdit = mutation({
           item.qtyReturned +
           splits.reduce(
             (s, x) => s + x.qtyOrdered - x.qtyCancelled - x.qtyReturned,
-            0
+            0,
           );
         const qty = assertQty(entry.qty, 0, "qty");
         // Pieces currently with the customer were charged AND already left
@@ -2167,7 +2346,11 @@ export const saveEdit = mutation({
             ? swapped
               ? assertCents(variant!.price ?? product!.defaultPrice, "price")
               : item.unitPrice
-            : nonNegativeCents(entry.price, "price", "Price can't be negative.");
+            : nonNegativeCents(
+                entry.price,
+                "price",
+                "Price can't be negative.",
+              );
         const discount =
           entry.discount === undefined
             ? (item.discount ?? 0)
@@ -2176,7 +2359,7 @@ export const saveEdit = mutation({
               : nonNegativeCents(
                   entry.discount,
                   "item discount",
-                  "Item discount is out of range."
+                  "Item discount is out of range.",
                 );
         // The discount must fit the line's subtotal AS BILLED — the billed
         // pieces at the line price plus any raised delta at the CURRENT
@@ -2211,7 +2394,10 @@ export const saveEdit = mutation({
         const variant = await ctx.db.get(entry.variantId);
         const product = variant ? await ctx.db.get(variant.productId) : null;
         if (!variant || !variant.active || !product || !product.active) {
-          throw new ConvexError({ code: "NOT_FOUND", message: "Item not found." });
+          throw new ConvexError({
+            code: "NOT_FOUND",
+            message: "Item not found.",
+          });
         }
         const qty = assertQty(entry.qty, 1, "qty");
         // Price is re-derived from the variant/product unless the user typed
@@ -2219,14 +2405,18 @@ export const saveEdit = mutation({
         const price =
           entry.price === undefined
             ? assertCents(variant.price ?? product.defaultPrice, "price")
-            : nonNegativeCents(entry.price, "price", "Price can't be negative.");
+            : nonNegativeCents(
+                entry.price,
+                "price",
+                "Price can't be negative.",
+              );
         const discount =
           entry.discount === undefined || entry.discount === null
             ? 0
             : nonNegativeCents(
                 entry.discount,
                 "item discount",
-                "Item discount is out of range."
+                "Item discount is out of range.",
               );
         if (discount > price * qty) throw itemDiscountOutOfRange();
         // How the customer gets these extra items — REQUIRED on a delivered
@@ -2248,10 +2438,19 @@ export const saveEdit = mutation({
         } else if (entry.fulfillment !== undefined) {
           throw new ConvexError({
             code: "INVALID_INPUT",
-            message: "Fulfillment only applies to new items on a delivered order.",
+            message:
+              "Fulfillment only applies to new items on a delivered order.",
           });
         }
-        plans.push({ kind: "new", variant, product, qty, price, discount, fulfillment });
+        plans.push({
+          kind: "new",
+          variant,
+          product,
+          qty,
+          price,
+          discount,
+          fulfillment,
+        });
       }
     }
 
@@ -2267,7 +2466,7 @@ export const saveEdit = mutation({
     // (fees, customer, channel, prices, discounts) stay allowed as before.
     if (sale.status === "delivered") {
       const structural = plans.some(
-        (p) => p.kind === "existing" && (p.swapped || p.deltaBilled < 0)
+        (p) => p.kind === "existing" && (p.swapped || p.deltaBilled < 0),
       );
       if (structural) {
         throw new ConvexError({
@@ -2286,7 +2485,7 @@ export const saveEdit = mutation({
     let derivedStatus: Doc<"sales">["status"] | null = null;
     if (sale.status === "delivered") {
       const newPlans = plans.filter(
-        (p): p is Extract<LinePlan, { kind: "new" }> => p.kind === "new"
+        (p): p is Extract<LinePlan, { kind: "new" }> => p.kind === "new",
       );
       if (newPlans.length > 0) {
         derivedStatus = newPlans.some((p) => p.fulfillment === "deliver_later")
@@ -2304,7 +2503,10 @@ export const saveEdit = mutation({
       }
     }
 
-    const plannedByItem = new Map<string, Extract<LinePlan, { kind: "existing" }>>();
+    const plannedByItem = new Map<
+      string,
+      Extract<LinePlan, { kind: "existing" }>
+    >();
     for (const plan of plans) {
       if (plan.kind === "existing") plannedByItem.set(plan.item._id, plan);
     }
@@ -2322,21 +2524,21 @@ export const saveEdit = mutation({
       if (plan.kind === "new") {
         netByVariant.set(
           plan.variant._id,
-          (netByVariant.get(plan.variant._id) ?? 0) + plan.qty
+          (netByVariant.get(plan.variant._id) ?? 0) + plan.qty,
         );
       } else if (plan.swapped) {
         netByVariant.set(
           plan.item.variantId,
-          (netByVariant.get(plan.item.variantId) ?? 0) - plan.billedOld
+          (netByVariant.get(plan.item.variantId) ?? 0) - plan.billedOld,
         );
         netByVariant.set(
           plan.variant!._id,
-          (netByVariant.get(plan.variant!._id) ?? 0) + plan.qty
+          (netByVariant.get(plan.variant!._id) ?? 0) + plan.qty,
         );
       } else {
         netByVariant.set(
           plan.item.variantId,
-          (netByVariant.get(plan.item.variantId) ?? 0) + plan.deltaBilled
+          (netByVariant.get(plan.item.variantId) ?? 0) + plan.deltaBilled,
         );
       }
     }
@@ -2361,22 +2563,25 @@ export const saveEdit = mutation({
         subtotal +=
           plan.price * plan.billedOld -
           plan.discount +
-          (plan.variant!.price ?? plan.product!.defaultPrice) * plan.deltaBilled;
+          (plan.variant!.price ?? plan.product!.defaultPrice) *
+            plan.deltaBilled;
       } else {
         subtotal += plan.price * plan.qty - plan.discount;
       }
     }
     for (const plan of plans) {
-      if (plan.kind === "new") subtotal += plan.price * plan.qty - plan.discount;
+      if (plan.kind === "new")
+        subtotal += plan.price * plan.qty - plan.discount;
     }
 
-    const { patch: salePatch, changes, deliveryFee } = await planOrderFields(
-      ctx,
-      sale,
-      shop,
-      args,
-      { subtotal, alwaysCheckDiscount: true }
-    );
+    const {
+      patch: salePatch,
+      changes,
+      deliveryFee,
+    } = await planOrderFields(ctx, sale, shop, args, {
+      subtotal,
+      alwaysCheckDiscount: true,
+    });
 
     // ---- Phase 2: apply. This is the same transaction as the checks above,
     // so if anything below throws, every write here rolls back with it. ----
@@ -2388,7 +2593,7 @@ export const saveEdit = mutation({
           ctx,
           plan.variant._id,
           plan.variant,
-          plan.product
+          plan.product,
         );
         const itemId = await ctx.db.insert("saleItems", {
           saleId: sale._id,
@@ -2474,7 +2679,7 @@ export const saveEdit = mutation({
           ctx,
           plan.variant!._id,
           plan.variant!,
-          plan.product!
+          plan.product!,
         );
         if (plan.qty > 0) {
           await ctx.db.insert("saleEvents", {
@@ -2502,13 +2707,12 @@ export const saveEdit = mutation({
         // traceable. On a DELIVERED order the extra pieces went over with
         // the visit, so the split line carries them as delivered on the
         // spot; anywhere else they wait for delivery like any other line.
-        const currentPrice =
-          plan.variant!.price ?? plan.product!.defaultPrice;
+        const currentPrice = plan.variant!.price ?? plan.product!.defaultPrice;
         const unitCostSnapshot = await weightedAvgCost(
           ctx,
           plan.variant!._id,
           plan.variant!,
-          plan.product!
+          plan.product!,
         );
         const raisedId = await ctx.db.insert("saleItems", {
           saleId: sale._id,
@@ -2554,7 +2758,7 @@ export const saveEdit = mutation({
         // billed — no row can ever go negative, and the merged event below
         // stays in the quantities the user actually sees.
         let back = -plan.deltaBilled;
-        const cancelRows = [...splitsByParent.get(item._id) ?? [], item];
+        const cancelRows = [...(splitsByParent.get(item._id) ?? []), item];
         for (const row of cancelRows) {
           if (back === 0) break;
           const cancellable =
@@ -2592,7 +2796,11 @@ export const saveEdit = mutation({
             : `Quantity ${label}: ${plan.billedOld} → ${plan.qty}.`,
           payload: removed
             ? { item: label, qty: String(-plan.deltaBilled) }
-            : { item: label, from: String(plan.billedOld), to: String(plan.qty) },
+            : {
+                item: label,
+                from: String(plan.billedOld),
+                to: String(plan.qty),
+              },
           userId: staff._id,
           ts: now,
         });
@@ -2635,7 +2843,8 @@ export const saveEdit = mutation({
         });
       }
 
-      if (Object.keys(itemPatch).length > 0) await ctx.db.patch(item._id, itemPatch);
+      if (Object.keys(itemPatch).length > 0)
+        await ctx.db.patch(item._id, itemPatch);
     }
 
     // The order-field events sort after the line events in the events index —
@@ -2668,7 +2877,7 @@ export const saveEdit = mutation({
         staff,
         targetStatus,
         { deliveryFee, chargeDeliveryFee: args.chargeDeliveryFee },
-        now
+        now,
       );
     }
 
@@ -2678,7 +2887,7 @@ export const saveEdit = mutation({
       "sales.saveEdit",
       idempotencyKey,
       idempotency.hash,
-      { kind: "sale", id: sale._id }
+      { kind: "sale", id: sale._id },
     );
     return await buildDetail(ctx, (await ctx.db.get(sale._id))!);
   },
@@ -2688,7 +2897,7 @@ export const saveEdit = mutation({
  * events and summaries. Shared with the T17 delivery screen. */
 export function variantLabel(
   product: Doc<"products"> | null,
-  variant: Doc<"productVariants"> | null
+  variant: Doc<"productVariants"> | null,
 ): string {
   if (!variant) return "—";
   const size = variant.size;
@@ -2706,7 +2915,10 @@ const lockedSale = () =>
   });
 
 const lineNotInSale = () =>
-  new ConvexError({ code: "NOT_FOUND", message: "Line not found on this order." });
+  new ConvexError({
+    code: "NOT_FOUND",
+    message: "Line not found on this order.",
+  });
 
 const duplicateLine = () =>
   new ConvexError({
@@ -2728,7 +2940,11 @@ const itemDiscountOutOfRange = () =>
   });
 
 /** Money that may not be negative: assertCents plus a sign check. */
-function nonNegativeCents(value: number, label: string, message: string): number {
+function nonNegativeCents(
+  value: number,
+  label: string,
+  message: string,
+): number {
   const cents = assertCents(value, label);
   if (cents < 0) throw new ConvexError({ code: "INVALID_MONEY", message });
   return cents;
@@ -2742,7 +2958,7 @@ export async function cancelOutstanding(
   sale: Doc<"sales">,
   staff: Doc<"users">,
   note: string,
-  now: number
+  now: number,
 ): Promise<void> {
   const items = await ctx.db
     .query("saleItems")
@@ -2750,7 +2966,10 @@ export async function cancelOutstanding(
     .collect();
   for (const item of items) {
     const outstanding =
-      item.qtyOrdered - item.qtyDelivered - item.qtyCancelled - item.qtyReturned;
+      item.qtyOrdered -
+      item.qtyDelivered -
+      item.qtyCancelled -
+      item.qtyReturned;
     if (outstanding <= 0) continue;
     await ctx.db.insert("stockLedger", {
       variantId: item.variantId,
@@ -2775,7 +2994,7 @@ export async function fillAllDelivered(
   ctx: { db: MutationCtx["db"] },
   sale: Doc<"sales">,
   staff: Doc<"users">,
-  now: number
+  now: number,
 ): Promise<void> {
   void staff;
   void now;
@@ -2812,8 +3031,12 @@ export async function applyDeliveredAdjustments(
   ctx: { db: MutationCtx["db"] },
   sale: Doc<"sales">,
   staff: Doc<"users">,
-  adjustments: { saleItemId: Id<"saleItems">; qtyDelivered: number; note?: string }[],
-  now: number
+  adjustments: {
+    saleItemId: Id<"saleItems">;
+    qtyDelivered: number;
+    note?: string;
+  }[],
+  now: number,
 ): Promise<void> {
   for (const adj of adjustments) {
     const item = await ctx.db.get(adj.saleItemId);
@@ -2919,7 +3142,7 @@ export const setLineDelivered = mutation({
       v.object({
         saleItemId: v.id("saleItems"),
         qtyDelivered: v.number(),
-      })
+      }),
     ),
   },
   returns: saleDetail,
@@ -2927,7 +3150,8 @@ export const setLineDelivered = mutation({
     const { staff } = await requireUser(ctx);
     const sale = await ctx.db.get(args.saleId);
     if (!sale) throw notFoundSale();
-    if (sale.status === "draft" || sale.status === "cancelled") throw lockedSale();
+    if (sale.status === "draft" || sale.status === "cancelled")
+      throw lockedSale();
     if (args.adjustments.length === 0) return await buildDetail(ctx, sale);
     const now = Date.now();
     await applyDeliveredAdjustments(ctx, sale, staff, args.adjustments, now);
@@ -2959,7 +3183,7 @@ export async function applyReturns(
   sale: Doc<"sales">,
   staff: Doc<"users">,
   returns: { saleItemId: Id<"saleItems">; qty: number }[],
-  now: number
+  now: number,
 ): Promise<void> {
   if (returns.length === 0) return;
   // Merge duplicate line entries server-side — the client sends intents,
@@ -3018,7 +3242,7 @@ export async function applyDamagedReturns(
   sale: Doc<"sales">,
   staff: Doc<"users">,
   returns: { saleItemId: Id<"saleItems">; qty: number }[],
-  now: number
+  now: number,
 ): Promise<void> {
   if (returns.length === 0) return;
   const byLine = new Map<string, number>();
@@ -3083,7 +3307,7 @@ export async function applyRefund(
   amount: number,
   note: string | undefined,
   timezone: string,
-  now: number
+  now: number,
 ): Promise<Id<"payments">> {
   const cents = assertCents(amount, "amount");
   if (cents <= 0) {
@@ -3140,7 +3364,7 @@ export async function applyResolutions(
   sale: Doc<"sales">,
   staff: Doc<"users">,
   resolutions: Resolution[],
-  now: number
+  now: number,
 ): Promise<void> {
   if (resolutions.length === 0) return;
 
@@ -3149,7 +3373,12 @@ export async function applyResolutions(
   // intents, the server decides what actually happens.
   const byKey = new Map<
     string,
-    { saleItemId: Id<"saleItems">; outcome: Resolution["outcome"]; rawQty: number; reason?: string }
+    {
+      saleItemId: Id<"saleItems">;
+      outcome: Resolution["outcome"];
+      rawQty: number;
+      reason?: string;
+    }
   >();
   for (const r of resolutions) {
     const key = `${r.saleItemId}:${r.outcome}`;
@@ -3187,7 +3416,7 @@ export async function applyResolutions(
         .filter((row) => row.splitFromItemId === item._id)
         .sort(
           (a, b) =>
-            a._creationTime - b._creationTime || a._id.localeCompare(b._id)
+            a._creationTime - b._creationTime || a._id.localeCompare(b._id),
         ),
     ];
     const parts: { row: Doc<"saleItems">; take: number }[] = [];
@@ -3226,7 +3455,7 @@ export async function applyResolutions(
     totalByLine.set(
       r.saleItemId,
       (totalByLine.get(r.saleItemId) ?? 0) +
-        assertQty(r.rawQty, 1, "resolution qty")
+        assertQty(r.rawQty, 1, "resolution qty"),
     );
   }
   for (const [saleItemId, total] of totalByLine) {
@@ -3270,7 +3499,7 @@ export async function applyResolutions(
           note: r.reason,
         },
       ],
-      now
+      now,
     );
   }
   const sellable: { saleItemId: Id<"saleItems">; qty: number }[] = [];
@@ -3283,7 +3512,8 @@ export async function applyResolutions(
     }
   }
   if (sellable.length > 0) await applyReturns(ctx, sale, staff, sellable, now);
-  if (damaged.length > 0) await applyDamagedReturns(ctx, sale, staff, damaged, now);
+  if (damaged.length > 0)
+    await applyDamagedReturns(ctx, sale, staff, damaged, now);
 }
 
 /** Standalone return flow (Sales list / order detail): returns pieces with
@@ -3293,7 +3523,7 @@ export const returnItems = mutation({
   args: {
     saleId: v.id("sales"),
     returns: v.array(
-      v.object({ saleItemId: v.id("saleItems"), qty: v.number() })
+      v.object({ saleItemId: v.id("saleItems"), qty: v.number() }),
     ),
     refund: v.optional(refundInput),
   },
@@ -3316,7 +3546,7 @@ export const returnItems = mutation({
         args.refund.amount,
         args.refund.note,
         shop.timezone,
-        now + 1
+        now + 1,
       );
     }
     return await buildDetail(ctx, (await ctx.db.get(sale._id))!);

@@ -21,7 +21,11 @@ export default defineSchema({
     language: v.union(v.literal("en"), v.literal("km")),
     printerConfig: v.optional(
       v.object({
-        type: v.union(v.literal("webusb"), v.literal("qz_tray"), v.literal("network")),
+        type: v.union(
+          v.literal("webusb"),
+          v.literal("qz_tray"),
+          v.literal("network"),
+        ),
         vendorId: v.optional(v.number()),
         productId: v.optional(v.number()),
         // T25 — QZ Tray: the OS printer name and the public signing
@@ -31,7 +35,7 @@ export default defineSchema({
         qzCert: v.optional(v.string()),
         networkHost: v.optional(v.string()),
         networkPort: v.optional(v.number()),
-      })
+      }),
     ),
     // Preselected on the POS sale screen; unset falls back to the walk-in customer.
     defaultCustomerId: v.optional(v.id("customers")),
@@ -64,7 +68,7 @@ export default defineSchema({
       v.literal("instagram"),
       v.literal("tiktok"),
       v.literal("walk_in"),
-      v.literal("custom")
+      v.literal("custom"),
     ),
     active: v.boolean(),
   }).index("by_nameLower", ["nameLower"]),
@@ -97,6 +101,7 @@ export default defineSchema({
     color: v.optional(v.string()),
     price: v.optional(v.number()), // override, integer cents
     cost: v.optional(v.number()), // override, integer cents
+    avgCost: v.optional(v.number()), // cached weighted-average cost, integer cents
     sku: v.optional(v.string()),
     active: v.boolean(),
   })
@@ -190,7 +195,7 @@ export default defineSchema({
       v.literal("exchange_in"), // new item added to the order, leaves shelf
       v.literal("cancel"),
       v.literal("adjustment"),
-      v.literal("stocktake")
+      v.literal("stocktake"),
     ),
     purchaseItemId: v.optional(v.id("purchaseItems")),
     saleItemId: v.optional(v.id("saleItems")),
@@ -234,7 +239,7 @@ export default defineSchema({
       v.literal("delivering"),
       v.literal("delivered"),
       v.literal("partially_delivered"),
-      v.literal("cancelled")
+      v.literal("cancelled"),
     ),
     deliveryFee: v.number(), // charged to the customer, integer cents
     deliveryCost: v.number(), // paid to the delivery company, integer cents
@@ -251,8 +256,8 @@ export default defineSchema({
         v.literal("delivered"),
         v.literal("partial"),
         v.literal("returned"),
-        v.literal("cancelled")
-      )
+        v.literal("cancelled"),
+      ),
     ),
     outcomeMarkedAt: v.optional(v.number()),
     imageStorageId: v.optional(v.id("_storage")),
@@ -312,7 +317,7 @@ export default defineSchema({
       v.literal("cash"),
       v.literal("bank_transfer"),
       v.literal("other"),
-      v.literal("refund")
+      v.literal("refund"),
     ),
     userId: v.id("users"),
     note: v.optional(v.string()),
@@ -357,7 +362,7 @@ export default defineSchema({
       v.literal("purchases.create"),
       v.literal("payments.receive"),
       v.literal("payments.refund"),
-      v.literal("adjustments.adjustStock")
+      v.literal("adjustments.adjustStock"),
     ),
     key: v.string(),
     requestHash: v.string(),
@@ -365,7 +370,7 @@ export default defineSchema({
       v.object({ kind: v.literal("sale"), id: v.id("sales") }),
       v.object({ kind: v.literal("purchase"), id: v.id("purchases") }),
       v.object({ kind: v.literal("payment"), id: v.id("payments") }),
-      v.object({ kind: v.literal("stockLedger"), id: v.id("stockLedger") })
+      v.object({ kind: v.literal("stockLedger"), id: v.id("stockLedger") }),
     ),
     createdAt: v.number(),
   }).index("by_scope", ["userId", "operation", "key"]),

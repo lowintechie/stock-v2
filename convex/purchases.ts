@@ -4,12 +4,19 @@ import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
-import { assertCents, assertQty, dayString, getShop, requireUser } from "./helpers";
+import {
+  assertCents,
+  assertQty,
+  dayString,
+  getShop,
+  requireUser,
+} from "./helpers";
 import {
   checkIdempotency,
   recordIdempotency,
   replayPurchaseId,
 } from "./idempotency";
+import { updateAvgCost } from "./sales";
 import {
   purchaseDetail,
   purchaseDoc,
@@ -33,7 +40,10 @@ const NOTES_MAX = 2000;
 const LINES_MAX = 500; // one purchase can carry at most this many lines
 
 function invalid(): never {
-  throw new ConvexError({ code: "INVALID_INPUT", message: "Check the form values." });
+  throw new ConvexError({
+    code: "INVALID_INPUT",
+    message: "Check the form values.",
+  });
 }
 
 /** Optional free text: empty string means "not set". */
@@ -55,7 +65,10 @@ function assertDate(ms: unknown, label: string): number {
     ms < Date.UTC(2000, 0, 1) ||
     ms > Date.now()
   ) {
-    throw new ConvexError({ code: "INVALID_INPUT", message: `${label} is not a valid date.` });
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: `${label} is not a valid date.`,
+    });
   }
   return ms;
 }
@@ -78,7 +91,7 @@ type LineInput = {
  */
 async function validateLineValues(
   ctx: MutationCtx,
-  lines: LineInput[]
+  lines: LineInput[],
 ): Promise<LineInput[]> {
   if (lines.length === 0 || lines.length > LINES_MAX) invalid();
   const seen = new Set<Id<"productVariants">>();
@@ -94,7 +107,10 @@ async function validateLineValues(
     const qty = assertQty(line.qty, 1);
     const unitCost = assertCents(line.unitCost, "unit cost");
     if (unitCost < 0) {
-      throw new ConvexError({ code: "INVALID_MONEY", message: "Cost can't be negative." });
+      throw new ConvexError({
+        code: "INVALID_MONEY",
+        message: "Cost can't be negative.",
+      });
     }
     const variant = await ctx.db.get(line.variantId);
     if (!variant) {
@@ -117,7 +133,10 @@ async function validateLineValues(
  * existing codes cannot reuse a display code. Codes are display labels, never
  * access keys (the UUID _id is the public identifier).
  */
-async function nextCode(ctx: MutationCtx, purchasedAt: number): Promise<string> {
+async function nextCode(
+  ctx: MutationCtx,
+  purchasedAt: number,
+): Promise<string> {
   const shop = await getShop(ctx);
   const prefix = `PO-${dayString(purchasedAt, shop.timezone).replace(/-/g, "")}-`;
   const purchases = await ctx.db
@@ -142,7 +161,7 @@ async function writeLineLedger(
   purchaseItemId: Id<"purchaseItems">,
   qty: number,
   userId: Id<"users">,
-  ts: number
+  ts: number,
 ) {
   await ctx.db.insert("stockLedger", {
     variantId,
@@ -162,12 +181,14 @@ async function writeLineLedger(
  */
 async function clearPurchaseLedger(
   ctx: MutationCtx,
-  purchaseItemIds: Id<"purchaseItems">[]
+  purchaseItemIds: Id<"purchaseItems">[],
 ) {
   for (const purchaseItemId of purchaseItemIds) {
     const rows = await ctx.db
       .query("stockLedger")
-      .withIndex("by_purchaseItem", (q) => q.eq("purchaseItemId", purchaseItemId))
+      .withIndex("by_purchaseItem", (q) =>
+        q.eq("purchaseItemId", purchaseItemId),
+      )
       .collect();
     for (const row of rows) await ctx.db.delete(row._id);
   }
@@ -182,7 +203,7 @@ async function assertRewriteKeepsStockNonnegative(
   ctx: MutationCtx,
   existing: Doc<"purchaseItems">[],
   lines: LineInput[],
-  isReceived: boolean
+  isReceived: boolean,
 ) {
   const clearedByVariant = new Map<Id<"productVariants">, number>();
   for (const item of existing) {
@@ -193,7 +214,7 @@ async function assertRewriteKeepsStockNonnegative(
     for (const row of rows) {
       clearedByVariant.set(
         row.variantId,
-        (clearedByVariant.get(row.variantId) ?? 0) + row.delta
+        (clearedByVariant.get(row.variantId) ?? 0) + row.delta,
       );
     }
   }
@@ -201,11 +222,17 @@ async function assertRewriteKeepsStockNonnegative(
   const addedByVariant = new Map<Id<"productVariants">, number>();
   if (isReceived) {
     for (const line of lines) {
-      addedByVariant.set(line.variantId, (addedByVariant.get(line.variantId) ?? 0) + line.qty);
+      addedByVariant.set(
+        line.variantId,
+        (addedByVariant.get(line.variantId) ?? 0) + line.qty,
+      );
     }
   }
 
-  const variantIds = new Set([...clearedByVariant.keys(), ...addedByVariant.keys()]);
+  const variantIds = new Set([
+    ...clearedByVariant.keys(),
+    ...addedByVariant.keys(),
+  ]);
   for (const variantId of variantIds) {
     const currentRows = await ctx.db
       .query("stockLedger")
@@ -213,12 +240,14 @@ async function assertRewriteKeepsStockNonnegative(
       .collect();
     const currentStock = currentRows.reduce((sum, row) => sum + row.delta, 0);
     const stockAfterRewrite =
-      currentStock - (clearedByVariant.get(variantId) ?? 0) +
+      currentStock -
+      (clearedByVariant.get(variantId) ?? 0) +
       (addedByVariant.get(variantId) ?? 0);
     if (stockAfterRewrite < 0) {
       throw new ConvexError({
         code: "OUT_OF_STOCK",
-        message: "This purchase can't be changed because some of its stock has already been used.",
+        message:
+          "This purchase can't be changed because some of its stock has already been used.",
       });
     }
   }
@@ -243,7 +272,7 @@ export const create = mutation({
         variantId: v.id("productVariants"),
         qty: v.number(),
         unitCost: v.number(),
-      })
+      }),
     ),
   },
   returns: purchaseDoc,
@@ -255,18 +284,24 @@ export const create = mutation({
       staff._id,
       "purchases.create",
       idempotencyKey,
-      payload
+      payload,
     );
     if (idempotency.replay !== null) {
       const purchase = await ctx.db.get(replayPurchaseId(idempotency.replay));
       if (!purchase) {
-        throw new ConvexError({ code: "NOT_FOUND", message: "Purchase not found." });
+        throw new ConvexError({
+          code: "NOT_FOUND",
+          message: "Purchase not found.",
+        });
       }
       return purchase;
     }
     const supplier = await ctx.db.get(args.supplierId);
     if (!supplier) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Supplier not found." });
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Supplier not found.",
+      });
     }
     if (!supplier.active) {
       throw new ConvexError({
@@ -289,19 +324,25 @@ export const create = mutation({
     if (args.deliveryCost !== undefined) {
       deliveryCost = assertCents(args.deliveryCost, "delivery cost");
       if (deliveryCost < 0) {
-        throw new ConvexError({ code: "INVALID_MONEY", message: "Cost can't be negative." });
+        throw new ConvexError({
+          code: "INVALID_MONEY",
+          message: "Cost can't be negative.",
+        });
       }
     }
     let otherCost: number | undefined;
     if (args.otherCost !== undefined) {
       otherCost = assertCents(args.otherCost, "other cost");
       if (otherCost < 0) {
-        throw new ConvexError({ code: "INVALID_MONEY", message: "Cost can't be negative." });
+        throw new ConvexError({
+          code: "INVALID_MONEY",
+          message: "Cost can't be negative.",
+        });
       }
     }
     const lines = await validateLineValues(
       ctx,
-      args.lines.map((line) => ({ ...line, purchaseItemId: undefined }))
+      args.lines.map((line) => ({ ...line, purchaseItemId: undefined })),
     );
     const code = await nextCode(ctx, purchasedAt);
     const now = Date.now();
@@ -318,6 +359,7 @@ export const create = mutation({
       createdAt: now,
     });
     const purchase = (await ctx.db.get(purchaseId))!;
+    const affectedVariants: Id<"productVariants">[] = [];
     for (const line of lines) {
       const itemId = await ctx.db.insert("purchaseItems", {
         purchaseId,
@@ -326,8 +368,21 @@ export const create = mutation({
         unitCost: line.unitCost,
       });
       if (receivedAt !== undefined) {
-        await writeLineLedger(ctx, purchase, line.variantId, itemId, line.qty, staff._id, receivedAt);
+        await writeLineLedger(
+          ctx,
+          purchase,
+          line.variantId,
+          itemId,
+          line.qty,
+          staff._id,
+          receivedAt,
+        );
+        affectedVariants.push(line.variantId);
       }
+    }
+    // Update cached avgCost for all variants that received stock
+    if (affectedVariants.length > 0) {
+      await updateAvgCost(ctx, affectedVariants);
     }
     await recordIdempotency(
       ctx,
@@ -335,7 +390,7 @@ export const create = mutation({
       "purchases.create",
       idempotencyKey,
       idempotency.hash,
-      { kind: "purchase", id: purchaseId }
+      { kind: "purchase", id: purchaseId },
     );
     return (await ctx.db.get(purchaseId))!;
   },
@@ -364,7 +419,7 @@ export const update = mutation({
         variantId: v.id("productVariants"),
         qty: v.number(),
         unitCost: v.number(),
-      })
+      }),
     ),
   },
   returns: purchaseDoc,
@@ -372,11 +427,17 @@ export const update = mutation({
     const { staff } = await requireUser(ctx);
     const purchase = await ctx.db.get(args.purchaseId);
     if (!purchase) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Purchase not found." });
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Purchase not found.",
+      });
     }
     const supplier = await ctx.db.get(args.supplierId);
     if (!supplier) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Supplier not found." });
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Supplier not found.",
+      });
     }
     // Existing purchases remain editable after their supplier is deactivated,
     // but a deactivated supplier cannot be newly assigned to another purchase.
@@ -390,12 +451,20 @@ export const update = mutation({
     // Dates: provided values are asserted; absent ones keep the stored values
     // (purchasedAt always exists after the backfill — createdAt is a
     // defensive fallback for rows written before it).
-    if (args.purchasedAt !== undefined) assertDate(args.purchasedAt, "Purchase date");
-    const effectivePurchasedAt = args.purchasedAt ?? purchase.purchasedAt ?? purchase.createdAt;
+    if (args.purchasedAt !== undefined)
+      assertDate(args.purchasedAt, "Purchase date");
+    const effectivePurchasedAt =
+      args.purchasedAt ?? purchase.purchasedAt ?? purchase.createdAt;
     const effectiveReceivedAt: number | undefined =
-      args.receivedAt === undefined ? (purchase.receivedAt ?? undefined) : args.receivedAt ?? undefined;
-    if (typeof args.receivedAt === "number") assertDate(args.receivedAt, "Arrival date");
-    if (effectiveReceivedAt !== undefined && effectiveReceivedAt < effectivePurchasedAt) {
+      args.receivedAt === undefined
+        ? (purchase.receivedAt ?? undefined)
+        : (args.receivedAt ?? undefined);
+    if (typeof args.receivedAt === "number")
+      assertDate(args.receivedAt, "Arrival date");
+    if (
+      effectiveReceivedAt !== undefined &&
+      effectiveReceivedAt < effectivePurchasedAt
+    ) {
       throw new ConvexError({
         code: "INVALID_INPUT",
         message: "The arrival date can't be before the purchase date.",
@@ -406,13 +475,19 @@ export const update = mutation({
     if (typeof args.deliveryCost === "number") {
       const deliveryCost = assertCents(args.deliveryCost, "delivery cost");
       if (deliveryCost < 0) {
-        throw new ConvexError({ code: "INVALID_MONEY", message: "Cost can't be negative." });
+        throw new ConvexError({
+          code: "INVALID_MONEY",
+          message: "Cost can't be negative.",
+        });
       }
     }
     if (typeof args.otherCost === "number") {
       const otherCost = assertCents(args.otherCost, "other cost");
       if (otherCost < 0) {
-        throw new ConvexError({ code: "INVALID_MONEY", message: "Cost can't be negative." });
+        throw new ConvexError({
+          code: "INVALID_MONEY",
+          message: "Cost can't be negative.",
+        });
       }
     }
 
@@ -487,9 +562,16 @@ export const update = mutation({
     const receivedAtChanged =
       args.receivedAt !== undefined && args.receivedAt !== purchase.receivedAt;
     const rewritesLedger =
-      wasReceived !== isReceived || (isReceived && (receivedAtChanged || membershipChanged));
+      wasReceived !== isReceived ||
+      (isReceived && (receivedAtChanged || membershipChanged));
+    const affectedVariants: Id<"productVariants">[] = [];
     if (rewritesLedger) {
-      await assertRewriteKeepsStockNonnegative(ctx, existing, lines, isReceived);
+      await assertRewriteKeepsStockNonnegative(
+        ctx,
+        existing,
+        lines,
+        isReceived,
+      );
       await clearPurchaseLedger(ctx, involvedIds);
       if (isReceived) {
         for (let i = 0; i < lines.length; i++) {
@@ -500,8 +582,14 @@ export const update = mutation({
             involvedIds[i],
             lines[i].qty,
             staff._id,
-            effectiveReceivedAt!
+            effectiveReceivedAt!,
           );
+          affectedVariants.push(lines[i].variantId);
+        }
+      } else {
+        // Un-arriving: collect variants that lost stock
+        for (const item of existing) {
+          affectedVariants.push(item.variantId);
         }
       }
     }
@@ -509,12 +597,24 @@ export const update = mutation({
     await ctx.db.patch(args.purchaseId, {
       supplierId: args.supplierId,
       notes: cleanNotes(args.notes),
-      ...(args.purchasedAt !== undefined ? { purchasedAt: args.purchasedAt } : {}),
+      ...(args.purchasedAt !== undefined
+        ? { purchasedAt: args.purchasedAt }
+        : {}),
       status: isReceived ? "received" : "draft",
       receivedAt: effectiveReceivedAt ?? undefined, // undefined removes the field on un-arrive
-      ...(args.deliveryCost === undefined ? {} : { deliveryCost: args.deliveryCost ?? undefined }),
-      ...(args.otherCost === undefined ? {} : { otherCost: args.otherCost ?? undefined }),
+      ...(args.deliveryCost === undefined
+        ? {}
+        : { deliveryCost: args.deliveryCost ?? undefined }),
+      ...(args.otherCost === undefined
+        ? {}
+        : { otherCost: args.otherCost ?? undefined }),
     });
+
+    // Update cached avgCost for all variants whose stock changed
+    if (affectedVariants.length > 0) {
+      await updateAvgCost(ctx, [...new Set(affectedVariants)]);
+    }
+
     return (await ctx.db.get(args.purchaseId))!;
   },
 });
@@ -539,12 +639,14 @@ export const get = query({
     const variantIds = [...new Set(itemDocs.map((item) => item.variantId))];
     const variants = await Promise.all(variantIds.map((id) => ctx.db.get(id)));
     const variantById = new Map(
-      variants.filter((v) => v !== null).map((v) => [v._id, v] as const)
+      variants.filter((v) => v !== null).map((v) => [v._id, v] as const),
     );
-    const productIds = [...new Set([...variantById.values()].map((v) => v.productId))];
+    const productIds = [
+      ...new Set([...variantById.values()].map((v) => v.productId)),
+    ];
     const products = await Promise.all(productIds.map((id) => ctx.db.get(id)));
     const productById = new Map(
-      products.filter((p) => p !== null).map((p) => [p._id, p] as const)
+      products.filter((p) => p !== null).map((p) => [p._id, p] as const),
     );
 
     const items = [];
@@ -581,9 +683,11 @@ export const list = query({
     // a factory keeps the page + total queries separate.
     const build = () => {
       if (term) {
-        return ctx.db.query("purchases").withIndex("by_code", (q) =>
-          q.gte("code", term).lt("code", `${term}￿`)
-        );
+        return ctx.db
+          .query("purchases")
+          .withIndex("by_code", (q) =>
+            q.gte("code", term).lt("code", `${term}￿`),
+          );
       }
       if (statusFilter) {
         return ctx.db
@@ -614,8 +718,12 @@ export const list = query({
           itemCount,
           totalCost,
         };
-      })
+      }),
     );
-    return { page: rows, continueCursor: page.isDone ? "" : page.continueCursor, total };
+    return {
+      page: rows,
+      continueCursor: page.isDone ? "" : page.continueCursor,
+      total,
+    };
   },
 });

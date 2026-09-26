@@ -8,7 +8,7 @@ import {
   recordIdempotency,
   replayStockLedgerId,
 } from "./idempotency";
-import { variantLabel } from "./sales";
+import { updateAvgCost, variantLabel } from "./sales";
 import { variantQty } from "./stock";
 import {
   adjustmentHistoryItem,
@@ -31,7 +31,10 @@ const STOCKTAKE_MAX_ROWS = 500;
 function cleanNote(text: string | undefined): string {
   const trimmed = text?.trim() ?? "";
   if (trimmed.length > NOTE_MAX) {
-    throw new ConvexError({ code: "INVALID_INPUT", message: "Note is too long." });
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "Note is too long.",
+    });
   }
   return trimmed;
 }
@@ -57,19 +60,25 @@ export const adjustStock = mutation({
       staff._id,
       "adjustments.adjustStock",
       idempotencyKey,
-      payload
+      payload,
     );
     if (idempotency.replay !== null) {
       const row = await ctx.db.get(replayStockLedgerId(idempotency.replay));
       if (!row) {
-        throw new ConvexError({ code: "NOT_FOUND", message: "Stock movement not found." });
+        throw new ConvexError({
+          code: "NOT_FOUND",
+          message: "Stock movement not found.",
+        });
       }
       return row;
     }
     const delta = assertDelta(args.delta);
     const note = cleanNote(args.note);
     if (!note) {
-      throw new ConvexError({ code: "INVALID_INPUT", message: "Say why this stock moved." });
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Say why this stock moved.",
+      });
     }
     const variant = await ctx.db.get(args.variantId);
     if (!variant) {
@@ -79,7 +88,10 @@ export const adjustStock = mutation({
     if (delta < 0) {
       const current = await variantQty(ctx, args.variantId);
       if (current + delta < 0) {
-        throw new ConvexError({ code: "OUT_OF_STOCK", message: `Only ${current} in stock.` });
+        throw new ConvexError({
+          code: "OUT_OF_STOCK",
+          message: `Only ${current} in stock.`,
+        });
       }
     }
     const rowId = await ctx.db.insert("stockLedger", {
@@ -96,7 +108,7 @@ export const adjustStock = mutation({
       "adjustments.adjustStock",
       idempotencyKey,
       idempotency.hash,
-      { kind: "stockLedger", id: rowId }
+      { kind: "stockLedger", id: rowId },
     );
     return (await ctx.db.get(rowId))!;
   },
@@ -111,7 +123,7 @@ export const batchAdjust = mutation({
       v.object({
         variantId: v.id("productVariants"),
         delta: v.number(), // signed: +in, −out
-      })
+      }),
     ),
     note: v.string(),
   },
@@ -126,7 +138,10 @@ export const batchAdjust = mutation({
     }
     const note = cleanNote(args.note);
     if (!note) {
-      throw new ConvexError({ code: "INVALID_INPUT", message: "Say why this stock moved." });
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Say why this stock moved.",
+      });
     }
     const seen = new Set<string>();
     const now = Date.now();
@@ -142,7 +157,10 @@ export const batchAdjust = mutation({
       const delta = assertDelta(row.delta);
       const variant = await ctx.db.get(row.variantId);
       if (!variant) {
-        throw new ConvexError({ code: "NOT_FOUND", message: "Item not found." });
+        throw new ConvexError({
+          code: "NOT_FOUND",
+          message: "Item not found.",
+        });
       }
       if (delta < 0) {
         const current = await variantQty(ctx, row.variantId);
@@ -176,27 +194,40 @@ export const recordStocktake = mutation({
       v.object({
         variantId: v.id("productVariants"),
         countedQty: v.number(), // what the owner physically counted
-      })
+      }),
     ),
   },
   returns: stocktakeResult,
   handler: async (ctx, args) => {
     const { staff } = await requireUser(ctx);
     if (args.rows.length === 0 || args.rows.length > STOCKTAKE_MAX_ROWS) {
-      throw new ConvexError({ code: "INVALID_INPUT", message: "Check the counts." });
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Check the counts.",
+      });
     }
     const seen = new Set<string>();
-    const changes: { variantId: Id<"productVariants">; before: number; after: number }[] = [];
+    const changes: {
+      variantId: Id<"productVariants">;
+      before: number;
+      after: number;
+    }[] = [];
     const now = Date.now();
     for (const row of args.rows) {
       if (seen.has(row.variantId)) {
-        throw new ConvexError({ code: "INVALID_INPUT", message: "Duplicate item in counts." });
+        throw new ConvexError({
+          code: "INVALID_INPUT",
+          message: "Duplicate item in counts.",
+        });
       }
       seen.add(row.variantId);
       const counted = assertQty(row.countedQty, 0, "counted qty");
       const variant = await ctx.db.get(row.variantId);
       if (!variant) {
-        throw new ConvexError({ code: "NOT_FOUND", message: "Item not found." });
+        throw new ConvexError({
+          code: "NOT_FOUND",
+          message: "Item not found.",
+        });
       }
       const before = await variantQty(ctx, row.variantId);
       if (counted === before) continue; // matches the system — nothing to write
@@ -236,12 +267,14 @@ export const stocktakeList = query({
       // Try both normalized and original form for un-migrated nameLower values.
       const hyphenForm = raw.replace(/ /g, "-");
       const spaceForm = raw.replace(/-/g, " ");
-      const terms = [...new Set([term, raw, hyphenForm, spaceForm])].filter(Boolean);
+      const terms = [...new Set([term, raw, hyphenForm, spaceForm])].filter(
+        Boolean,
+      );
       for (const t of terms) {
         const batch = await ctx.db
           .query("products")
           .withIndex("by_nameLower", (q) =>
-            q.gte("nameLower", t).lt("nameLower", t + "\uffff")
+            q.gte("nameLower", t).lt("nameLower", t + "\uffff"),
           )
           .take(1000);
         const seen = new Set(products.map((p) => p._id));
@@ -270,7 +303,9 @@ export const stocktakeList = query({
           productId: product._id,
           label: variantLabel(product, variant),
           qty: await variantQty(ctx, variant._id),
-          ...(product.imageStorageId ? { imageStorageId: product.imageStorageId } : {}),
+          ...(product.imageStorageId
+            ? { imageStorageId: product.imageStorageId }
+            : {}),
         });
       }
     }
@@ -298,28 +333,30 @@ export const recentChanges = query({
         .order("desc")
         .take(20),
     ]);
-    const rows = [...adjustments, ...stocktakes].sort((a, b) => b.ts - a.ts).slice(0, 20);
+    const rows = [...adjustments, ...stocktakes]
+      .sort((a, b) => b.ts - a.ts)
+      .slice(0, 20);
 
     // Deduped batch joins: variants → products, users.
     const variants = await Promise.all(
-      [...new Set(rows.map((r) => r.variantId))].map((id) => ctx.db.get(id))
+      [...new Set(rows.map((r) => r.variantId))].map((id) => ctx.db.get(id)),
     );
     const variantById = new Map(
-      variants.filter((v) => v !== null).map((v) => [v._id, v] as const)
+      variants.filter((v) => v !== null).map((v) => [v._id, v] as const),
     );
     const products = await Promise.all(
-      [...new Set([...variantById.values()].map((v) => v.productId))].map((id) =>
-        ctx.db.get(id)
-      )
+      [...new Set([...variantById.values()].map((v) => v.productId))].map(
+        (id) => ctx.db.get(id),
+      ),
     );
     const productById = new Map(
-      products.filter((p) => p !== null).map((p) => [p._id, p] as const)
+      products.filter((p) => p !== null).map((p) => [p._id, p] as const),
     );
     const users = await Promise.all(
-      [...new Set(rows.map((r) => r.userId))].map((id) => ctx.db.get(id))
+      [...new Set(rows.map((r) => r.userId))].map((id) => ctx.db.get(id)),
     );
     const nameById = new Map(
-      users.filter((u) => u !== null).map((u) => [u._id, u.name] as const)
+      users.filter((u) => u !== null).map((u) => [u._id, u.name] as const),
     );
 
     return rows.map((row) => {
@@ -328,7 +365,7 @@ export const recentChanges = query({
         row,
         label: variantLabel(
           variant ? (productById.get(variant.productId) ?? null) : null,
-          variant ?? null
+          variant ?? null,
         ),
         userName: nameById.get(row.userId) ?? "—",
       };
