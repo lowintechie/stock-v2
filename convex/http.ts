@@ -47,13 +47,23 @@ const rateLimitedAuth = httpAction(async (ctx, request) => {
   }
   // Forward to Better Auth's handler.
   const auth = createAuth(ctx);
+   console.log("[AUTH REQUEST]", {
+     method: request.method,
+     path: url.pathname,
+     cookie: request.headers.get("cookie"),
+     authorization: request.headers.get("authorization"),
+   });
   // return auth.handler(request);
   const response = await auth.handler(request);
 
-  console.log(
-    `[AUTH RESULT] ${request.method} ${url.pathname} -> ${response.status}`,
-  );
-
+ 
+   console.log("[AUTH RESULT]", {
+     method: request.method,
+     path: url.pathname,
+     status: response.status,
+     setCookie: response.headers.get("set-cookie"),
+     location: response.headers.get("location"),
+   });
   return response;
 });
 
