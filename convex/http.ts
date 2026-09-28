@@ -47,7 +47,14 @@ const rateLimitedAuth = httpAction(async (ctx, request) => {
   }
   // Forward to Better Auth's handler.
   const auth = createAuth(ctx);
-  return auth.handler(request);
+  // return auth.handler(request);
+  const response = await auth.handler(request);
+
+  console.log(
+    `[AUTH RESULT] ${request.method} ${url.pathname} -> ${response.status}`,
+  );
+
+  return response;
 });
 
 // Register auth routes manually (instead of authComponent.registerRoutes)
