@@ -54,7 +54,10 @@ function useStableAuth(initialToken?: string | null) {
       // If there is no session the cookie won't be present — the token
       // endpoint would return 401 every time.  Return null immediately
       // instead of spamming the endpoint.
-      if (!hasSessionRef.current && !forceRefreshToken) return null;
+      if (!hasSessionRef.current && !forceRefreshToken) {
+        console.log("[TOKEN] skip — no session");
+        return null;
+      }
 
       if (tokenRef.current && !forceRefreshToken) return tokenRef.current;
       if (!forceRefreshToken && pendingRef.current) return pendingRef.current;
@@ -62,19 +65,24 @@ function useStableAuth(initialToken?: string | null) {
         !forceRefreshToken &&
         lastFailRef.current > 0 &&
         Date.now() - lastFailRef.current < TOKEN_BACKOFF_MS
-      )
+      ) {
+        console.log("[TOKEN] skip — backoff");
         return null;
+      }
 
+      console.log("[TOKEN] fetching…");
       pendingRef.current = authClient.convex
         .token({ fetchOptions: { throw: false } })
         .then(({ data }) => {
           const token = data?.token || null;
+          console.log("[TOKEN] result:", token ? "ok" : "null");
           tokenRef.current = token;
           setCachedToken(token);
           lastFailRef.current = 0;
           return token;
         })
-        .catch(() => {
+        .catch((err) => {
+          console.log("[TOKEN] error:", err);
           tokenRef.current = null;
           setCachedToken(null);
           lastFailRef.current = Date.now();
